@@ -23,7 +23,7 @@ TESTING = false # if true: observe fully with known root node
 E = [1, 2, 3]
 
 # Length of Markov chain
-N = 400
+N = 100
 
 if EASYkernel
         Ki(θ) = [[1.0 - 0.5θ 0.25θ   0.25θ  ]
@@ -40,7 +40,7 @@ if TESTING    # if perfect observations, with known root node, we should be able
      Πroot = [1.0, 0.0, 0.0]
 else 
      Λ = [1.0 0.0; 1.0 0.0; 0.0 1.0]
-     Πroot = [0.5, 0.25, 0.25]
+     Πroot = [1.0, 1.0, 1.0]/3.0
 end
 
 # True parameter vector
@@ -59,8 +59,11 @@ xstars = guided_track(K, Πroot, hs)
 ts = 0:N
 pl_paths = plot(ts, xstars, label="recovered")
 plot!(pl_paths, ts, xs, label="latent", linestyle=:dash)
-
-plot!(pl_paths, ts, ys, label="observed")
+if TESTING
+     plot!(pl_paths, ts, ys, label="observed")
+else 
+     plot!(pl_paths, ts, ys .+ 1, label="observed")
+end
 pl_paths
 
 
@@ -86,6 +89,7 @@ posterior(Λ, Πroot, ys) = (θ) ->  likelihood(θ, Λ, Πroot, ys)*pdf(Πθ, θ
 Π(θ) = Πprop(θ) / quadgk(Πprop, 0, 1, rtol=1e-8)[1]
 
 pl_post = plot(Θgrid, Π.(Θgrid), label="posterior")
+vline!(pl_post, [out.minimizer], label="mle")
 vline!(pl_post, [θ0], label="true")
 pl_post
 
