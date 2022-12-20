@@ -36,7 +36,7 @@ function loglik_and_bif(θ, Πroot, ys)
     Λ = Λi(θ)
     hprev = Λ[:,ys[N+1]]     
     hs = [hprev]
-    loglik = 0.0# zero(θ[1])
+    loglik = zero(θ[1])
     for i=N:-1:1
         h = (K * hprev) .* Λ[:,ys[i]]  
         c = normalise!(h)
