@@ -165,6 +165,9 @@ pl_lik
 # check that derivative is zero at optimum (only works with first defn of negloklik). Why??
 ∇negloglik(Λ, Πroot, ys)(out.minimizer)
 
+optimize(f, g!, h!, [0.0, 0.0], Newton())
+
+
 ############ ------------------------------------------------ ############
 
 # draw posterior density 

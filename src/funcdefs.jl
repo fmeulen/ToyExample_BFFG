@@ -38,7 +38,8 @@ function loglik_and_bif(θ, Πroot, ys)
             h = (K * hprev) .* Λ[:,ys[i]]  
             c = normalise!(h)
             loglik += c
-            pushfirst!(hs, h)
+            #pushfirst!(hs, h)
+            pushfirst!(hs, ForwardDiff.value.(h))
             hprev = h
             
     end
@@ -48,6 +49,7 @@ end
 
 negloglik(Πroot, ys) = (θ) ->  -loglik_and_bif(θ, Πroot, ys).ll
 ∇negloglik(Πroot, ys) = (θ) -> ForwardDiff.gradient(negloglik(Πroot, ys), θ)
+
 
 function guided_track(K, Πroot, hs)# Generate approximate track
     N = length(hs) - 1
