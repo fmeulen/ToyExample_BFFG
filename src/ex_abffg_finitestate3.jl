@@ -78,7 +78,7 @@ pl_paths
 grid = 0:0.01:1
 θgrid = [ComponentArray(p=x) for x in grid]
 #θgrid = [x for x in grid]
-pl_lik = plot(grid, negloglik(Πroot, ys).(Θgrid), label="neg. loglikelihood")
+pl_lik = plot(grid, negloglik(Πroot, ys).(θgrid), label="neg. loglikelihood")
 
 
 negloglik(Πroot, ys)(θgrid[20])
@@ -88,8 +88,11 @@ out = optimize(negloglik(Πroot, ys), 0.0, 1.0)    # box constrained optimizatio
 vline!(pl_lik, [out.minimizer], label="mle")
 vline!(pl_lik, [θ0], label="true")
 
+out2 = optimize(negloglik(Πroot, ys), θgrid[10])    # box constrained optimization
+out2.minimizer
 
 
+Optim.minimizer(optimize(negloglik(Πroot, ys), θgrid[10], Newton(); autodiff = :forward))
 
 ############ ------------------------------------------------ ############
 
