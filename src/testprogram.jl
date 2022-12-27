@@ -9,6 +9,7 @@ using Distributions
 using ComponentArrays
 using StatsFuns
 using FiniteDiff
+using TransformVariables, LogDensityProblems, LogDensityProblemsAD, DynamicHMC, TransformedLogDensities
 
 # func definitions
 function generate_track(K, Λ, Πroot, N)             # Generate exact track + observations
@@ -206,60 +207,3 @@ summarize_tree_statistics(results[1].tree_statistics)
 
 
 
-
-
-
-
-# kernel K for application
-a = softmax([1.0, 0.0, -Inf])
-
-[softmax([1.0, 0.0, -Inf])' ; softmax([1.0, 0.0, -Inf])']
-
-# 3 state-model with only transitions to neighbours possible
-
-θ = ComponentVector(γ12 = rand(2), γ21 = rand(2), γ23 = rand(2), γ32 = rand(2))
-x = [1.0, 2.0]
-Kii(θ,x) = [softmax([0.0, dot(x,θ.γ12), -Inf])' ; softmax([dot(x,θ.γ21), 0.0, dot(x,θ.γ23)])' ; softmax([-Inf, dot(x,θ.γ32), 0])']
-#mulK(θ,x) = 
-Kii(θ, x)
-
-
-θ = ComponentArray(Z1=rand(Exponential(1.0),3), Z2=rand(Exponential(1.0),3), Z3=rand(Exponential(1.0),3), Z4=rand(Exponential(1.0),3))
-
-ψ(x) = 2.0*logistic.(cumsum(x)) .- 1.0
-function response(Z) 
-    λ = ψ(Z)
-    [1.0-λ[1] λ[1]; 1.0-λ[2] λ[2]; 1.0-λ[3] λ[3]]
-end
-Λi(θ) =[ response(θ.Z1), response(θ.Z2), response(θ.Z3), response(θ.Z4)    ]
-
-function h_from_observation(θ, y::Vector)
-    U = Λi(θ)
-    u = [U[i][:,y[i]] for i in eachindex(y)]
-    u2 = hcat(u...)
-    prod(u2, dims=2)
-end
-
-
-y = [1, 2, 1, 1] # answers to the 4 question at one particular time
-h_from_observation(θ, y)
-
-if false
-    # inplace version
-    ∇negloglik_repam!(Πroot, ys) = (θ, storage) -> ForwardDiff.gradient!(storage, negloglik_repam(Πroot, ys), θ)
-    optimize(∇negloglik_repam(Πroot, ys), someθ)
-    optimize(∇negloglik_repam(Πroot, ys), ∇negloglik_repam!(Πroot, ys), someθ, Newton())
-
-
-    # ∇negloglik(Πroot, ys)(opt.minimizer)
-
-    # # inplace versions
-    # ∇negloglik!(Πroot, ys) = (θ, storage) -> ForwardDiff.gradient!(storage, negloglik(Πroot, ys), θ)
-
-
-    # storage = ∇negloglik(Πroot, ys)(someθ)
-    # ∇negloglik!(Πroot, ys)(someθ, storage)
-
-    optimize(negloglik(Πroot, ys), ∇negloglik!(Πroot, ys), someθ, Newton())
-    optimize(negloglik(Πroot, ys), someθ)
-end
