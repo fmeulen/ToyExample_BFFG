@@ -17,12 +17,11 @@ struct ObservationTrajectory{S,T}
     X::Vector{S}  # vector of covariates
     Y::Vector{T}  # vector of responses
 end
-ObservationTrajectory(X) = ObservationTrajectory(X, fill(missing, length(X)))
+ObservationTrajectory(X) = ObservationTrajectory(X, fill(missing, length(X)))  # constructor
 
 
 # kernel K 
 Ki(θ,x) = [softmax([0.0, dot(x,θ.γ12), -Inf])' ; softmax([dot(x,θ.γ21), 0.0, dot(x,θ.γ23)])' ; softmax([-Inf, dot(x,θ.γ32), 0])']
-# observation kernel
 
 # kernel Λ (observations)
 ψ(x) = 2.0*logistic.(cumsum(x)) .- 1.0
@@ -50,13 +49,12 @@ function generate_track(θ, 𝒪::ObservationTrajectory, Πroot)             # G
 end
 
 function h_from_observation(θ, y::Vector)
-    U = Λi(θ)
-    u = [U[i][:,y[i]] for i in eachindex(y)]  # only those indices where y is not missing, for an index where it is missing we can just send [1;1;1;1]
-    u2 = hcat(u...)
-    vec(prod(u2, dims=2))
+    Λ = Λi(θ)
+    a1 = [Λ[i][:,y[i]] for i in eachindex(y)]  # only those indices where y is not missing, for an index where it is missing we can just send [1;1;1;1]
+    a2 = hcat(a1...)
+    vec(prod(a2, dims=2))
 end
 
-#h_from_observation(θ, Y[1])
 
 function normalise!(x)
     s = sum(x)
@@ -129,13 +127,38 @@ end
 
 
 # True parameter vector
-θ0 = ComponentArray(γ12 = rand(2), γ21 = rand(2), γ23 = rand(2), γ32 = rand(2), 
-    Z1=rand(Exponential(1.0),3), Z2=rand(Exponential(1.0),3), Z3=rand(Exponential(1.0),3), Z4=rand(Exponential(1.0),3))
+γup = 0.7; γdown = -0.8
+γ12 = γ23 = [γup, 0.0]
+γ21 = γ32 = [γdown, -0.1]
+Z0 = [0.8, 1.0, 1.5]
+θ0 = ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ23, γ32 = γ32, 
+    Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0)
+
+
+# Prior on root node
 Πroot = [1.0, 1.0, 1.0]/3.0
 
-N = 100
-X = [rand(2) for i in 1:N]
-𝒪 = ObservationTrajectory(X)
+# generate covariates
+n = 11 # nr of subjects
+T = 250 # nr of times at which we observe
+
+
+# generate covariates, el1 = intensity, el2 = gender
+𝒪s = []
+for i in 1:11
+    if i ≤ 5 
+        X = [ [0.05*t + 0.2*randn(), 0.0] for t in 1:T]
+    else
+        X = [ [-0.05*t + 0.2*randn(), 1.0] for t in 1:T]
+    end
+    push!(𝒪s, ObservationTrajectory(X))
+end
+
+
+
+#N = 100
+#X = [rand(2) for i in 1:N]
+𝒪 = 𝒪s[1]
 
 
 # generate track  
@@ -147,7 +170,14 @@ ll, H = loglik_and_bif(θ0, Πroot, 𝒪)
 Uᵒ = guided_track(θ0, Πroot, 𝒪, H)
 # separately compute loglikelihood
 loglik(Πroot, 𝒪)(θ0)
-𝒪s = [𝒪, 𝒪]
+
+
+# generate tracks for all individuals
+for i in eachindex(𝒪s)
+    U, Y =  generate_track(θ0, 𝒪s[i], Πroot) 
+    𝒪s[i] = ObservationTrajectory(𝒪s[i].X, Y)
+end 
+
 loglik(Πroot, 𝒪s)(θ0)
 
 
@@ -196,7 +226,7 @@ optimize(negloglik(Πroot, 𝒪), θ)
 
 t = as((γ12=as(Array, 2), γ21=as(Array, 2), γ23=as(Array, 2), γ32=as(Array, 2),
          Z1=as(Array,asℝ₊, 3), Z2=as(Array, asℝ₊, 3), Z3=as(Array, asℝ₊, 3), Z4=as(Array, asℝ₊, 3)  )) 
-p = loglik(Πroot, 𝒪)
+p = loglik(Πroot, 𝒪s)
 P = TransformedLogDensity(t, p)
 ∇P = ADgradient(:ForwardDiff, P);
 
@@ -208,6 +238,8 @@ ps = outhmc.posterior_matrix
 ps_t = transform.(t, eachcol(ps))
 
 l = @layout [a  b;  c d ; e d]
+getindex.(getindex.(ps_t,:γ12),2)
+getindex.(getindex.(ps_t,:Z1),3)
 plot(getindex.(getindex.(ps_t,:γ12),1),label="γ12"); 
 hline!([θ0.p],label="")
 pl_p2 = histogram(getindex.(ps_t,:p),label=""); vline!([θ0.p],label="")
