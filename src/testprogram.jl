@@ -77,7 +77,8 @@ function loglik_and_bif(θ, Πroot, ys)
         
         hprev = h
     end
-    loglik += log(Πroot' * hprev)
+    loglik += log(Πroot' * hprev)  
+    loglik += logprior(θ)
     (ll=loglik, h=hs)          
 end
 
@@ -94,8 +95,6 @@ function loglik(θ, Πroot, ys) # don't save h functions
     K = Ki(θ)
     Λ = Λi(θ)
     hprev = Λ[:,ys[N+1]] 
-    # hprev = convert.(ForwardDiff.Dual, Λ[:,ys[N+1]] )    
-    # hs = [hprev]
     ll = zero(θ[1])
     for i=N:-1:1
         h = (K * hprev) .* Λ[:,ys[i]]  
@@ -104,9 +103,10 @@ function loglik(θ, Πroot, ys) # don't save h functions
        hprev = h
     end
     ll += log(Πroot' * hprev)
-    ll #+ logpdf(Beta(3.0, 1.0),θ.q)
+    ll + logprior(θ) 
 end
 
+logprior(θ) = logpdf(Beta(3.0, 1.0),θ.q)  # just as illustration
 
 negloglik(Πroot, ys) = (θ) ->  -loglik_and_bif(θ, Πroot, ys).ll
 ∇negloglik(Πroot, ys) = (θ) -> ForwardDiff.gradient(negloglik(Πroot, ys), θ)
