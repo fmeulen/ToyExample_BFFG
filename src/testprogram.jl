@@ -10,8 +10,21 @@ using ComponentArrays
 using StatsFuns
 using FiniteDiff
 using TransformVariables, LogDensityProblems, LogDensityProblemsAD, DynamicHMC, TransformedLogDensities
+using Random
+using MCMCDiagnosticTools, DynamicHMC.Diagnostics
 
 # func definitions
+
+"""
+    generate_track(K, Λ, Πroot, N)
+
+    K: transition matrix of latent chain
+    Λ: transition matrix to observations
+    Πroot: prior vector on initial state
+
+    returns (xs, ys), where xs is the latent state, and ys the observed value
+    both xs and ys are of lenght N+1
+"""
 function generate_track(K, Λ, Πroot, N)             # Generate exact track + observations
     xprev = sample(Weights(Πroot))                  # sample x0
     xs = [xprev]
@@ -26,25 +39,40 @@ function generate_track(K, Λ, Πroot, N)             # Generate exact track + o
     (xs, ys)
 end
 
+
+"""
+    normalise!(x)
+
+    in place normalisation of x such that its elements sum to 1
+    returns log(sum(x))
+"""
 function normalise!(x)
     s = sum(x)
     x .= x/s
     log(s)
 end
 
+"""
+    loglik_and_bif(θ, Πroot, ys)
+
+    with parameter value θ, prior on initial state Πroot and observation vector ys, compute 
+    the backward information filter 
+
+    returns (ll=loglik, h=hs)       
+"""
 function loglik_and_bif(θ, Πroot, ys)
     N = length(ys) - 1
     K = Ki(θ)
     Λ = Λi(θ)
     hprev = Λ[:,ys[N+1]] 
-    # hprev = convert.(ForwardDiff.Dual, Λ[:,ys[N+1]] )    
+    # hprev = convert.(ForwardDiff.Dual, Λ[:,ys[N+1]] )    # alternative option to make function AD proof
     hs = [hprev]
     loglik = zero(θ[1])
     for i=N:-1:1
         h = (K * hprev) .* Λ[:,ys[i]]  
         c = normalise!(h)
         loglik += c
-#        pushfirst!(hs, h)
+#        pushfirst!(hs, h) # not AD-proof
         pushfirst!(hs, ForwardDiff.value.(h))
         
         hprev = h
@@ -53,6 +81,14 @@ function loglik_and_bif(θ, Πroot, ys)
     (ll=loglik, h=hs)          
 end
 
+"""
+    loglik_and_bif(θ, Πroot, ys)
+
+    with parameter value θ, prior on initial state Πroot and observation vector ys, compute 
+    the backward information filter 
+
+    returns loglikelihood
+"""
 function loglik(θ, Πroot, ys) # don't save h functions
     N = length(ys) - 1
     K = Ki(θ)
@@ -76,6 +112,16 @@ negloglik(Πroot, ys) = (θ) ->  -loglik_and_bif(θ, Πroot, ys).ll
 ∇negloglik(Πroot, ys) = (θ) -> ForwardDiff.gradient(negloglik(Πroot, ys), θ)
 loglik(Πroot, ys) = (θ) -> loglik(θ, Πroot, ys) 
 
+
+"""
+    guided_track(K, Πroot, hs)
+
+    K: transition matrix of latent chain
+    Πroot: prior vector on initial state
+    hs: Doob's h-Transforms
+
+    returns sample of guided process
+"""
 function guided_track(K, Πroot, hs)# Generate approximate track
     N = length(hs) - 1
     xprev = sample(Weights(Πroot .* hs[1])) # Weighted prior distribution
@@ -89,6 +135,8 @@ function guided_track(K, Πroot, hs)# Generate approximate track
     xᵒ
 end
 
+
+####################################################################################
 # Define the state space
 E = [1, 2, 3]
 
@@ -129,23 +177,24 @@ pl_lik = plot(grid, negloglik(Πroot, ys).(θgrid), label="neg. loglikelihood")
 # vline!(pl_lik, [out.minimizer], label="mle")
  vline!(pl_lik, [θ0.p], label="true")
 
+
+ # some checks on automatic differentiation
 someθ = ComponentArray(p=0.5, q=0.7, r=0.5)
 negloglik(Πroot, ys)(someθ)
 
 ∇negloglik(Πroot, ys)(someθ)
 FiniteDiff.finite_difference_gradient(negloglik(Πroot, ys), someθ)
 
-# ensure domain is ℝ
+# ensure domain is ℝ and use optimiser
 negloglik_repam(Πroot, ys)= (θ) -> negloglik(Πroot, ys)(logistic.(θ))
-
 opt = optimize(negloglik_repam(Πroot, ys), someθ)    # box constrained optimization
 m = logistic.(opt.minimizer)
 
 ∇negloglik_repam(Πroot, ys) = (θ) -> ForwardDiff.gradient(negloglik_repam(Πroot, ys), θ)
-∇negloglik_repam(Πroot, ys)(opt.minimizer)
+∇negloglik_repam(Πroot, ys)(opt.minimizer)  # should be close to zero
 
-# Try DynamicHMC
-
+#############################################################################
+# Try DynamicHMC (assume uniform distribution on (p,q,r))
 
 p = loglik(Πroot, ys)
 
@@ -172,11 +221,11 @@ pl_r2 = histogram(getindex.(ps_t,:r),label=""); vline!([θ0.r],label="")
 plot(pl_p, pl_p2, pl_q, pl_q2, pl_r, pl_r2, layout=l)
 
 
-
+# hmc diagnostics
 ess, R̂ = ess_rhat(stack_posterior_matrices([outhmc]))
 @show R̂
 
-# multiple chains
+# can also do multiple chains
 results = [mcmc_with_warmup(Random.default_rng(), ∇P, 1000) for _ in 1:5]
 
 # To get the posterior for ``α``, we need to use the columns of the `posterior_matrix` and

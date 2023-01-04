@@ -12,6 +12,7 @@ using FiniteDiff
 using TransformVariables, LogDensityProblems, LogDensityProblemsAD, DynamicHMC, TransformedLogDensities, Random
 using MCMCDiagnosticTools, DynamicHMC.Diagnostics
 using UnPack
+using PDMats
 
 struct ObservationTrajectory{S,T}
     X::Vector{S}  # vector of covariates
@@ -99,7 +100,7 @@ function loglik(θ, Πroot, 𝒪s::Vector)
     for i ∈ eachindex(𝒪s)
         ll += loglik(θ, Πroot, 𝒪s[i])
     end
-    ll
+    ll + logprior(θ)
 end
 
 
@@ -107,6 +108,16 @@ negloglik(Πroot, 𝒪) = (θ) ->  -loglik_and_bif(θ, Πroot, 𝒪).ll
 ∇negloglik(Πroot, 𝒪) = (θ) -> ForwardDiff.gradient(negloglik(Πroot, 𝒪), θ)
 loglik(Πroot, 𝒪) = (θ) -> loglik(θ, Πroot, 𝒪) 
 
+logpdfexp3(Z) = logpdf(Exponential(1.0), Z[1]) + logpdf(Exponential(1.0), Z[2]) + logpdf(Exponential(1.0), Z[3])
+
+function logprior(θ,α=2.0)
+    𝒟 = MvNormal(2,α)
+    logprioru = logpdf(𝒟, θ.γ12) + logpdf(𝒟, θ.γ21) + logpdf(𝒟, θ.γ23) + logpdf(𝒟, θ.γ32)   
+    logpriorλ = logpdfexp3(θ.Z1) + logpdfexp3(θ.Z2) + logpdfexp3(θ.Z3) + logpdfexp3(θ.Z4)  
+    logprioru + logpriorλ 
+end
+
+∇loglik(Πroot, 𝒪) = (θ) -> ForwardDiff.gradient(loglik(Πroot, 𝒪), θ)
 
 function guided_track(θ, Πroot, 𝒪, H)# Generate approximate track
     X = 𝒪.X
@@ -114,8 +125,8 @@ function guided_track(θ, Πroot, 𝒪, H)# Generate approximate track
     uprev = sample(Weights(Πroot .* H[1])) # Weighted prior distribution
     uᵒ = [uprev]
     for i=1:N
-            p = Ki(θ,X[i])[uprev,:] .* H[i+1]         # Weighted transition density
-            u = sample(Weights(p))
+            w = Ki(θ,X[i])[uprev,:] .* H[i+1]         # Weighted transition density
+            u = sample(Weights(w))
             push!(uᵒ, u)
             uprev = u
     end
@@ -154,16 +165,11 @@ for i in 1:11
     push!(𝒪s, ObservationTrajectory(X))
 end
 
-
-
-#N = 100
-#X = [rand(2) for i in 1:N]
-𝒪 = 𝒪s[1]
-
+######### testing the code ################
 
 # generate track  
-U, Y =  generate_track(θ0, 𝒪, Πroot) 
-𝒪 = ObservationTrajectory(X,Y)
+U, Y =  generate_track(θ0, 𝒪s[1], Πroot) 
+𝒪 = ObservationTrajectory(𝒪s[1].X,Y)
 # backward filter
 ll, H = loglik_and_bif(θ0, Πroot, 𝒪)
 # sample from conditioned process
@@ -196,6 +202,10 @@ der_findiff = FiniteDiff.finite_difference_gradient(negloglik(Πroot, 𝒪), θ0
 
 @show der_fwdiff-der_findiff
 
+@time loglik(Πroot, 𝒪s)(θ0);
+@time ∇loglik(Πroot, 𝒪s)(θ0);
+
+optimize(loglik(Πroot, 𝒪s), θ0, GradientDescent())
 #----------------------------------
 # compute mle and plot with loglikelihood
 # grid = 0:0.01:1
@@ -220,7 +230,7 @@ der_findiff = FiniteDiff.finite_difference_gradient(negloglik(Πroot, 𝒪), θ0
 # ∇negloglik_repam(Πroot, ys) = (θ) -> ForwardDiff.gradient(negloglik_repam(Πroot, ys), θ)
 # ∇negloglik_repam(Πroot, ys)(opt.minimizer)
 
-optimize(negloglik(Πroot, 𝒪), θ) 
+optimize(negloglik(Πroot, 𝒪s[1]), θ0) 
 
 # Try DynamicHMC
 
