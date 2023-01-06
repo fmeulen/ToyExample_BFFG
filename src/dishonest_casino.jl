@@ -14,7 +14,7 @@ K = Ki(θ0)
 Λ = Λi(θ0)
 N = 1000
 xs, ys = generate_track(K, Λ, Πroot, N)
-logprior(θ)  = 0.0
+logprior(θ)  = logpdf(Beta(4.0, 1.0), θ.p0) + logpdf(Beta(1.0, 4.0), θ.p1)
 (l, hs) = loglik_and_bif(θ0, Πroot, ys)
 xstars = guided_track(K, Πroot, hs)
 

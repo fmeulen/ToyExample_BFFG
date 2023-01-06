@@ -2,6 +2,7 @@ wdir = @__DIR__
 cd(wdir)
 outdir= joinpath(wdir, "out")
 
+using Turing
 using StatsBase, Plots, LinearAlgebra
 using Optim
 using ForwardDiff
@@ -12,6 +13,8 @@ using FiniteDiff
 using TransformVariables, LogDensityProblems, LogDensityProblemsAD, DynamicHMC, TransformedLogDensities
 using Random
 using MCMCDiagnosticTools, DynamicHMC.Diagnostics
+using StatsPlots
+
 
 # func definitions
 
@@ -78,7 +81,6 @@ function loglik_and_bif(θ, Πroot, ys)
         hprev = h
     end
     loglik += log(Πroot' * hprev)  
-    loglik += logprior(θ)
     (ll=loglik, h=hs)          
 end
 
@@ -103,10 +105,10 @@ function loglik(θ, Πroot, ys) # don't save h functions
        hprev = h
     end
     ll += log(Πroot' * hprev)
-    ll + logprior(θ) 
+    ll 
 end
 
-logprior(θ) = logpdf(Beta(3.0, 1.0),θ.q)  # just as illustration
+
 
 negloglik(Πroot, ys) = (θ) ->  -loglik_and_bif(θ, Πroot, ys).ll
 ∇negloglik(Πroot, ys) = (θ) -> ForwardDiff.gradient(negloglik(Πroot, ys), θ)
@@ -169,14 +171,11 @@ plot!(pl_paths, ts, xs, label="latent", linestyle=:dash)
 plot!(pl_paths, ts, ys .+ 1, label="observed")
 pl_paths
 
-# compute mle and plot with loglikelihood
+# compute mle with q and r fixed at true value and plot with loglikelihood
 grid = 0:0.01:1
 θgrid = [ComponentArray(p=x, q=θ0.q, r=θ0.r) for x in grid]
-pl_lik = plot(grid, negloglik(Πroot, ys).(θgrid), label="neg. loglikelihood")
-# out = optimize(negloglik(Πroot, ys), 0.0, 1.0)    # box constrained optimization
-# vline!(pl_lik, [out.minimizer], label="mle")
- vline!(pl_lik, [θ0.p], label="true")
-
+pl_lik = plot(grid, loglik(Πroot, ys).(θgrid), label="neg. loglikelihood")
+vline!(pl_lik, [θ0.p], label="true")
 
  # some checks on automatic differentiation
 someθ = ComponentArray(p=0.5, q=0.7, r=0.5)
@@ -194,21 +193,18 @@ m = logistic.(opt.minimizer)
 ∇negloglik_repam(Πroot, ys)(opt.minimizer)  # should be close to zero
 
 #############################################################################
-# Try DynamicHMC (assume uniform distribution on (p,q,r))
+# DynamicHMC (assume uniform distribution on (p,q,r))
 
-p = loglik(Πroot, ys)
+logprior() = (θ) -> logpdf(Beta(3.0, 1.0),θ.q)    # just as illustration
+p(Πroot, ys) = (θ) -> loglik(Πroot, ys)(θ) + logprior()(θ) 
 
 t = as((p=as_unit_interval , q=as_unit_interval, r=as_unit_interval))
-P = TransformedLogDensity(t, p)
-@assert P.log_density_function(someθ) ==p(someθ)
-
+P = TransformedLogDensity(t, p(Πroot, ys))
 ∇P = ADgradient(:ForwardDiff, P);
 
+@time outhmc = mcmc_with_warmup(Random.default_rng(2), ∇P, 1000);  # one chain
 
-# one chain
-outhmc = mcmc_with_warmup(Random.default_rng(2), ∇P, 1000)
 ps = outhmc.posterior_matrix
-
 ps_t = transform.(t, eachcol(ps))
 
 l = @layout [a  b;  c d ; e d]
@@ -219,40 +215,59 @@ pl_q2 = histogram(getindex.(ps_t,:q),label=""); vline!([θ0.q],label="")
 pl_r = plot(getindex.(ps_t,:r),label="r"); hline!([θ0.r],label="")
 pl_r2 = histogram(getindex.(ps_t,:r),label=""); vline!([θ0.r],label="")
 plot(pl_p, pl_p2, pl_q, pl_q2, pl_r, pl_r2, layout=l)
+savefig("dynamic_hmc.png")
 
-
-# hmc diagnostics
+# HMC diagnostics
 ess, R̂ = ess_rhat(stack_posterior_matrices([outhmc]))
 @show R̂
 
+
 # can also do multiple chains
-results = [mcmc_with_warmup(Random.default_rng(), ∇P, 1000) for _ in 1:5]
+if false 
+    results = [mcmc_with_warmup(Random.default_rng(), ∇P, 1000) for _ in 1:5]
 
-# To get the posterior for ``α``, we need to use the columns of the `posterior_matrix` and
-# then transform
-posterior = transform.(t, eachcol(pool_posterior_matrices(results)));
-ps_t = posterior
+    # To get the posterior for ``α``, we need to use the columns of the `posterior_matrix` and
+    # then transform
+    posterior = transform.(t, eachcol(pool_posterior_matrices(results)));
+    ps_t = posterior
 
-l = @layout [a ; b; c]
-pl_p = plot(getindex.(ps_t,:p),label="p"); hline!([θ0.p],label="")
-pl_q = plot(getindex.(ps_t,:q),label="q"); hline!([θ0.q],label="")
-pl_r = plot(getindex.(ps_t,:r),label="r"); hline!([θ0.r],label="")
-plot(pl_p, pl_q, pl_r, layout=l)
+    posterior_p = first.(posterior);
+    mean(posterior_p)
 
+    # check the effective sample size
+    ess, R̂ = ess_rhat(stack_posterior_matrices(results))
 
-
-# Extract the parameter.
-posterior_p = first.(posterior);
-
-# check the mean
-mean(posterior_p)
-
-# check the effective sample size
-ess, R̂ = ess_rhat(stack_posterior_matrices(results))
-
-# NUTS-specific statistics of the first chain
-summarize_tree_statistics(results[1].tree_statistics)
+    # NUTS-specific statistics of the first chain
+    summarize_tree_statistics(results[1].tree_statistics)
+end
 
 
 
+################### with Turing.jl (seems somewhat easier)
 
+@model function logtarget(ys, Πroot)
+    p ~ Uniform(0.0, 1.0)
+    q ~ Beta(3.0, 1.0)
+    r ~ Uniform(0.0, 1.0)
+    Turing.@addlogprob! loglik(Πroot, ys)(ComponentVector(p=p, q=q, r=r))
+end
+
+# multiple samplers to choose from, such as 
+sampler = DynamicNUTS() # HMC(0.05, 10);
+
+model = logtarget(ys, Πroot)
+@time chain = sample(model, sampler, 1_000; progress=false);
+histogram(chain)
+savefig("turing.png")
+
+describe(chain)[1]
+describe(chain)[2]
+
+# compute map and mle 
+map_estimate = optimize(model, MAP())
+mle_estimate = optimize(model, MLE())
+#coeftable(mle_estimate) # does not work (why???)
+
+# initialise from MLE
+@time chain = sample(model, sampler, 1_000, init_params = map_estimate.values.array; progress=false);
+plot(chain) 
