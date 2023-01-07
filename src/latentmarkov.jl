@@ -8,32 +8,35 @@ using ForwardDiff
 using Distributions
 using ComponentArrays
 using StatsFuns
-using FiniteDiff
-using TransformVariables, LogDensityProblems, LogDensityProblemsAD, DynamicHMC, TransformedLogDensities, Random
-using MCMCDiagnosticTools, DynamicHMC.Diagnostics
+using Random
+using DynamicHMC
 using UnPack
 using PDMats
 using Turing
+using StatsPlots
 
 struct ObservationTrajectory{S,T}
     X::Vector{S}  # vector of covariates (each element of X contains the covariates at a particular time instance)
-    Y::Vector{T}  # vector of responses
+    Y::Vector{T}  # vector of responses (each element of Y contains a K-vector of responses to the K questions)
 end
-ObservationTrajectory(X) = ObservationTrajectory(X, fill(missing, length(X)))  # constructor if only X is given
+ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(fill(1,dimY), length(X)))  # constructor if only X is given
 
 
 # transition kernel of the latent chain
 Ki(θ,x) = [softmax([0.0, dot(x,θ.γ12), -Inf])' ; softmax([dot(x,θ.γ21), 0.0, dot(x,θ.γ23)])' ; softmax([-Inf, dot(x,θ.γ32), 0])']
 
 # construct transition kernel Λ to observations
-ψ(x) = 2.0*logistic.(cumsum(x)) .- 1.0
+# we assume each element of the vector Z is nonnegative. A prior on 
+# λ1, λ2, λ3 is formed by setting λi = logistic(cumsum(Z)[i])
+# TODO consider better motivated choices
+
+ψ(x) = 2.0*logistic.(cumsum(x)) .- 1.0  # function that maps [0,∞) to [0,1), applied to cumsum(x)
 
 function response(Z) 
     λ = ψ(Z)
     [1.0-λ[1] λ[1]; 1.0-λ[2] λ[2]; 1.0-λ[3] λ[3]]
 end
 Λi(θ) =[ response(θ.Z1), response(θ.Z2), response(θ.Z3), response(θ.Z4)    ]
-
 
 function generate_track(θ, 𝒪::ObservationTrajectory, Πroot)             # Generate exact track + observations
     X = 𝒪.X
@@ -51,12 +54,24 @@ function generate_track(θ, 𝒪::ObservationTrajectory, Πroot)             # G
     (U, Y)
 end
 
-function h_from_observation(θ, y::Vector)
+function h_from_observation_old(θ::Tθ, y::Vector{T}) where {Tθ,T} 
     Λ = Λi(θ)
     a1 = [Λ[i][:,y[i]] for i in eachindex(y)]  # only those indices where y is not missing, for an index where it is missing we can just send [1;1;1;1], or simply define y as such in case of missingness
     a2 = hcat(a1...)
     vec(prod(a2, dims=2))
 end
+
+function h_from_observation(θ::Tθ, y::Vector{T}) where {Tθ,T} 
+    Λ = Λi(θ)
+    a1 = [Λ[i][:,y[i]] for i in eachindex(y)]  # only those indices where y is not missing, for an index where it is missing we can just send [1;1;1;1], or simply define y as such in case of missingness
+    out = [prod(first.(a1))]
+    K = length(a1[1])
+    for k in 2:K
+        push!(out,prod(getindex.(a1,k)) )
+    end
+    out
+end
+
 
 
 function normalise!(x)
@@ -78,23 +93,38 @@ function loglik_and_bif(θ, Πroot, 𝒪::ObservationTrajectory)
         pushfirst!(H, ForwardDiff.value.(h))
         hprev = h
     end
-    loglik += log(Πroot' * hprev)
+    loglik += log(dot(hprev, Πroot))
     (ll=loglik, H=H)          
 end
 
-function loglik(θ, Πroot, 𝒪::ObservationTrajectory)
+# function loglik(θ::Tθ, Πroot::TΠ, 𝒪::ObservationTrajectory) where {Tθ, TΠ}
+#     @unpack X, Y = 𝒪
+#     N = length(Y) - 1
+#     hprev = h_from_observation(θ, Y[N+1])
+#     loglik = zero(θ[1][1])
+#     for i=N:-1:1
+#         h = (Ki(θ,X[i]) * hprev) .* h_from_observation(θ, Y[i])
+#         c = normalise!(h)
+#         loglik += c
+#         hprev = h
+#     end
+#     loglik + log(Πroot' * hprev)
+# end
+
+function loglik(θ::Tθ, Πroot::TΠ, 𝒪::ObservationTrajectory) where {Tθ, TΠ}
     @unpack X, Y = 𝒪
     N = length(Y) - 1
-    hprev = h_from_observation(θ, Y[N+1])
+    h = h_from_observation(θ, Y[N+1])
     loglik = zero(θ[1][1])
     for i=N:-1:1
-        h = (Ki(θ,X[i]) * hprev) .* h_from_observation(θ, Y[i])
+        h = (Ki(θ,X[i]) * h) .* h_from_observation(θ, Y[i])
         c = normalise!(h)
         loglik += c
-        hprev = h
     end
-    loglik + log(Πroot' * hprev)
+    loglik + log(dot(h, Πroot))
 end
+
+
 
 # loglik for multiple persons
 function loglik(θ, Πroot, 𝒪s::Vector)
@@ -124,10 +154,9 @@ function guided_track(θ, Πroot, 𝒪, H)# Generate approximate track
 end
 
 
+########### An example, where data are generated from the model ####################
 
-
-
-# True parameter vector: make an example 
+# True parameter vector
 γup = 0.7; γdown = -0.8
 γ12 = γ23 = [γup, 0.0]
 γ21 = γ32 = [γdown, -0.1]
@@ -138,19 +167,20 @@ Z0 = [0.8, 1.0, 1.5]
 Πroot = [1.0, 1.0, 1.0]/3.0
 
 # generate covariates
-n = 11 # nr of subjects
-T = 250 # nr of times at which we observe
+n = 20 # nr of subjects
+T = 50 # nr of times at which we observe
 
-
-# generate covariates, el1 = intensity, el2 = gender
-𝒪s = []
-for i in 1:11
-    if i ≤ 5 
+# el1 = intensity, el2 = gender
+X = [ [0.05*t + 0.2*randn(), 0.0] for t in 1:T]
+dimY = 4
+𝒪s = [ObservationTrajectory(X,dimY)]
+for i in 2:n
+    if i ≤ 10 
         X = [ [0.05*t + 0.2*randn(), 0.0] for t in 1:T]
     else
         X = [ [-0.05*t + 0.2*randn(), 1.0] for t in 1:T]
     end
-    push!(𝒪s, ObservationTrajectory(X))
+    push!(𝒪s, ObservationTrajectory(X, dimY))
 end
 
 ######### testing the code ################
@@ -185,7 +215,10 @@ pl_paths
 
 #---------------------- check computing times
 @time loglik(Πroot, 𝒪s)(θ0);
+
 @time ∇loglik(Πroot, 𝒪s)(θ0);
+
+
 
 ##########################################################################
 # use of Turing to sample from the posterior
@@ -203,7 +236,8 @@ end
 sampler = DynamicNUTS() # HMC(0.05, 10);
 
 model = logtarget(𝒪s, Πroot)
-@time chain = sample(model, sampler, 1_000; progress=false);
+
+@time chain = sample(model, sampler, 1_000)#; progress=true);
 histogram(chain)
 savefig("latentmarkov_histograms.png")
 plot(chain)
@@ -219,6 +253,21 @@ describe(chain)[2]
 
 
 # TODO: profiling
+using ProfileView
+
+ProfileView.@profview loglik(θ0, Πroot, 𝒪s)
+ProfileView.@profview ∇loglik(Πroot, 𝒪)(θ0)
+
+@code_warntype loglik(θ0, Πroot, 𝒪s[1])
+@code_warntype loglik(θ0, Πroot, 𝒪s)
+
+y =𝒪s[1].Y[2]
+θ = θ0
+@code_warntype h_from_observation(θ, y)
+
+@code_warntype ∇loglik(Πroot, 𝒪s[1])(θ0);
+
+#using BenchmarkTools
 
 
 # l = @layout [a  b;  c d ; e d]
