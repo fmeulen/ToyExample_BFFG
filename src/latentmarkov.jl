@@ -30,12 +30,19 @@ Ki(θ,x) = [softmax([0.0, dot(x,θ.γ12), -Inf])' ; softmax([dot(x,θ.γ21), 0.0
 # λ1, λ2, λ3 is formed by setting λi = logistic(cumsum(Z)[i])
 # TODO consider better motivated choices
 
-ψ(x) = 2.0*logistic.(cumsum(x)) .- 1.0  # function that maps [0,∞) to [0,1), applied to cumsum(x)
-
+scaledandshifted_logistic(x) = 2.0logistic(x) -1.0 # function that maps [0,∞) to [0,1)
+"""
+    make matrix [1.0-λ[1] λ[1]; 1.0-λ[2] λ[2]; 1.0-λ[3] λ[3]] (if 3 latent vars)
+"""
 function response(Z) 
-    λ = ψ(Z)
-    [1.0-λ[1] λ[1]; 1.0-λ[2] λ[2]; 1.0-λ[3] λ[3]]
+        λ = scaledandshifted_logistic.(cumsum(Z))
+        Λ = Matrix{eltype(λ)}(undef , length(λ), 2)  # 2 comes from assuming binary answers to questions
+        for k in eachindex(λ)
+            Λ[k,:] =[  one(λ[k])-λ[k] λ[k] ]
+        end
+        Λ            
 end
+
 Λi(θ) =[ response(θ.Z1), response(θ.Z2), response(θ.Z3), response(θ.Z4)    ]
 
 function generate_track(θ, 𝒪::ObservationTrajectory, Πroot)             # Generate exact track + observations
@@ -126,6 +133,8 @@ end
 
 
 
+
+
 # loglik for multiple persons
 function loglik(θ, Πroot, 𝒪s::Vector)
     ll = zero(θ[1][1])
@@ -157,18 +166,20 @@ end
 ########### An example, where data are generated from the model ####################
 
 # True parameter vector
-γup = 0.7; γdown = -0.8
+γup = 2.0; γdown = -0.5
 γ12 = γ23 = [γup, 0.0]
 γ21 = γ32 = [γdown, -0.1]
-Z0 = [0.8, 1.0, 1.5]
+Z0 = [0.5, 1.0, 1.5]
 θ0 = ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ23, γ32 = γ32, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0)
+
+println("true vals", "  ", γup,"  ", γdown,"  ", Z0)
 
 # Prior on root node
 Πroot = [1.0, 1.0, 1.0]/3.0
 
 # generate covariates
-n = 20 # nr of subjects
-T = 50 # nr of times at which we observe
+n = 40 # nr of subjects
+T = 30 # nr of times at which we observe
 
 # el1 = intensity, el2 = gender
 X = [ [0.05*t + 0.2*randn(), 0.0] for t in 1:T]
@@ -229,15 +240,36 @@ pl_paths
     γ12 = γ23 = [γup, 0.0]
     γ21 = γ32 = [γdown, -0.1]
     Z0 ~ filldist(Exponential(), 3) 
-    Turing.@addlogprob! loglik(Πroot, 𝒪s)(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ23, γ32 = γ32,Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0))
+    Turing.@addlogprob! loglik(Πroot, 𝒪s)(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ23, γ32 = γ32, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0))
 end
+
+# @model function logtarget2(𝒪s, Πroot, K)  # K is nr of latent states (turns out that be much slower)
+#     γup ~ Normal(0,3)
+#     γdown ~ Normal(0,3)
+#     γ12 = γ23 = [γup, 0.0]
+#     γ21 = γ32 = [γdown, -0.1]
+#     r ~ Dirichlet(fill(1,K+1))
+#    # r ~ filldist(Gamma(2.0,1.0), K+1)
+#     Z0 = cumsum(r)[1:K] #/sum(r)
+#     Turing.@addlogprob! loglik(Πroot, 𝒪s)(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ23, γ32 = γ32, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0))
+# end
+
+
+
+
 
 # multiple samplers to choose from, such as 
 sampler = DynamicNUTS() # HMC(0.05, 10);
-
 model = logtarget(𝒪s, Πroot)
 
-@time chain = sample(model, sampler, 1_000)#; progress=true);
+# compute map and mle 
+@time map_estimate = optimize(model, MAP())
+#@time mle_estimate = optimize(model, MLE())
+
+@time chain = sample(model, sampler, 1_000, init_params = map_estimate.values.array; progress=false);
+#@time chain = sample(model, sampler, 1_000)#; progress=true);
+
+# plotting 
 histogram(chain)
 savefig("latentmarkov_histograms.png")
 plot(chain)
@@ -246,26 +278,25 @@ savefig("latentmarkov_traceplots_histograms.png")
 describe(chain)[1]
 describe(chain)[2]
 
-# compute map and mle 
-@time map_estimate = optimize(model, MAP())
 
-@time mle_estimate = optimize(model, MLE())
+
+
 
 
 # TODO: profiling
-using ProfileView
+# using ProfileView
 
-ProfileView.@profview loglik(θ0, Πroot, 𝒪s)
-ProfileView.@profview ∇loglik(Πroot, 𝒪)(θ0)
+# ProfileView.@profview loglik(θ0, Πroot, 𝒪s)
+# ProfileView.@profview ∇loglik(Πroot, 𝒪)(θ0)
 
-@code_warntype loglik(θ0, Πroot, 𝒪s[1])
-@code_warntype loglik(θ0, Πroot, 𝒪s)
+# @code_warntype loglik(θ0, Πroot, 𝒪s[1])
+# @code_warntype loglik(θ0, Πroot, 𝒪s)
 
-y =𝒪s[1].Y[2]
-θ = θ0
-@code_warntype h_from_observation(θ, y)
+# y =𝒪s[1].Y[2]
+# θ = θ0
+# @code_warntype h_from_observation(θ, y)
 
-@code_warntype ∇loglik(Πroot, 𝒪s[1])(θ0);
+# @code_warntype ∇loglik(Πroot, 𝒪s[1])(θ0);
 
 #using BenchmarkTools
 
@@ -281,5 +312,4 @@ y =𝒪s[1].Y[2]
 # pl_r = plot(getindex.(ps_t,:r),label="r"); hline!([θ0.r],label="")
 # pl_r2 = histogram(getindex.(ps_t,:r),label=""); vline!([θ0.r],label="")
 # plot(pl_p, pl_p2, pl_q, pl_q2, pl_r, pl_r2, layout=l)
-
 
