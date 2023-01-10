@@ -204,6 +204,13 @@ for i in 2:n
     push!(𝒪s, ObservationTrajectory(X, dimY))
 end
 
+# generate tracks for all individuals
+for i in eachindex(𝒪s)
+    U, 𝒪 =  sample(θ0, 𝒪s[i], Πroot) 
+    𝒪s[i] = 𝒪
+end 
+
+
 ######### testing the code ################
 # generate track for one person
 U, 𝒪 =  sample(θ0, 𝒪s[1], Πroot) 
@@ -227,11 +234,6 @@ pl_paths
 
 ######### end testing the code ################
 
-# generate tracks for all individuals
-for i in eachindex(𝒪s)
-    U, 𝒪 =  sample(θ0, 𝒪s[i], Πroot) 
-    𝒪s[i] = 𝒪
-end 
 
 
 
