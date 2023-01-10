@@ -14,6 +14,7 @@ using UnPack
 using PDMats
 using Turing
 using StatsPlots
+using BenchmarkTools
 
 import StatsBase.sample
 struct ObservationTrajectory{S,T}
@@ -223,7 +224,7 @@ Uᵒ = sample_guided(θ0, Πroot, 𝒪, H)
 loglik(Πroot, 𝒪s)(θ0)
 
 # plotting 
-N = length(Uᵒ)
+N = length(Uᵒ) 
 ts = 1:N
 Uᵒ = sample_guided(θ0, Πroot, 𝒪, H)
 pl_paths = plot(ts, Uᵒ, label="recovered")
@@ -240,8 +241,8 @@ pl_paths
 
 
 #---------------------- check computing times
-@time loglik(Πroot, 𝒪s)(θ0);
-@time ∇loglik(Πroot, 𝒪s)(θ0);
+@btime loglik(Πroot, 𝒪s)(θ0);           # 3.495 ms (59402 allocations: 4.47 MiB)
+@btime ∇loglik(Πroot, 𝒪s)(θ0);          # 13.773 ms (148972 allocations: 39.99 MiB)
 
 ####### ForwardDiff is faster and allocates less than FiniteDiff ###########
 TESTING = false
@@ -277,7 +278,7 @@ end
 
 
 
-
+  
 
 # multiple samplers to choose from, such as 
 sampler = DynamicNUTS() # HMC(0.05, 10);
