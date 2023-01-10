@@ -15,6 +15,7 @@ using PDMats
 using Turing
 using StatsPlots
 
+import StatsBase.sample
 struct ObservationTrajectory{S,T}
     X::Vector{S}  # vector of covariates (each element of X contains the covariates at a particular time instance)
     Y::Vector{T}  # vector of responses (each element of Y contains a K-vector of responses to the K questions)
@@ -45,28 +46,35 @@ end
 
 Λi(θ) =[ response(θ.Z1), response(θ.Z2), response(θ.Z3), response(θ.Z4)    ]
 
-function generate_track(θ, 𝒪::ObservationTrajectory, Πroot)             # Generate exact track + observations
+
+sample_observation(Λ, u) =  [sample(Weights(Λ[i][u,:])) for i in eachindex(Λ)] 
+
+"""
+    sample(θ, 𝒪::ObservationTrajectory, Πroot)             
+
+    𝒪.X: vector of covariates, say of length n
+    
+    samples U_1,..., U_n and Y_1,..., Y_n, where 
+    U_1 ~ Πroot
+    for i ≥ 2 
+        U_i | X_{i-1}, U_{i-1} ~ Row_{U_{i-1}} K(θ,X_{i-1})
+    (thus, last element of X are not used)
+
+"""
+function sample(θ, 𝒪::ObservationTrajectory, Πroot)             # Generate exact track + observations
     X = 𝒪.X
     Λ = Λi(θ)
     uprev = sample(Weights(Πroot))                  # sample x0
     U = [uprev]
-    Y = [ [sample(Weights(Λ[i][uprev,:])) for i in eachindex(Λ)] ]
-    for i=eachindex(X)
+    for i in eachindex(X[1:(end-1)])
         u = sample(Weights(Ki(θ,X[i])[uprev,:]))         # Generate sample from previous state
-        push!(U, u)
-        y =  [sample(Weights(Λ[i][u,:])) for i in eachindex(Λ)] 
-        push!(Y, y)
+        push!(U, copy(u))
         uprev = u
     end
-    (U, Y)
+    Y = [sample_observation(Λ, u) for u ∈ U]
+    (U, ObservationTrajectory(𝒪.X, Y))
 end
 
-function h_from_observation_old(θ::Tθ, y::Vector{T}) where {Tθ,T} 
-    Λ = Λi(θ)
-    a1 = [Λ[i][:,y[i]] for i in eachindex(y)]  # only those indices where y is not missing, for an index where it is missing we can just send [1;1;1;1], or simply define y as such in case of missingness
-    a2 = hcat(a1...)
-    vec(prod(a2, dims=2))
-end
 
 function h_from_observation(θ::Tθ, y::Vector{T}) where {Tθ,T} 
     Λ = Λi(θ)
@@ -79,8 +87,6 @@ function h_from_observation(θ::Tθ, y::Vector{T}) where {Tθ,T}
     out
 end
 
-
-
 function normalise!(x)
     s = sum(x)
     x .= x/s
@@ -89,20 +95,22 @@ end
 
 function loglik_and_bif(θ, Πroot, 𝒪::ObservationTrajectory)
     @unpack X, Y = 𝒪
-    N = length(Y) - 1
-    hprev = h_from_observation(θ, Y[N+1])
+    N = length(Y) 
+    hprev = h_from_observation(θ, Y[N])
     H = [hprev]
     loglik = zero(θ[1][1])
-    for i=N:-1:1
+    for i in (N-1):-1:1
         h = (Ki(θ,X[i]) * hprev) .* h_from_observation(θ, Y[i])
         c = normalise!(h)
         loglik += c
-        pushfirst!(H, ForwardDiff.value.(h))
+        pushfirst!(H, copy(ForwardDiff.value.(h)))
         hprev = h
     end
     loglik += log(dot(hprev, Πroot))
     (ll=loglik, H=H)          
 end
+
+
 
 # function loglik(θ::Tθ, Πroot::TΠ, 𝒪::ObservationTrajectory) where {Tθ, TΠ}
 #     @unpack X, Y = 𝒪
@@ -120,10 +128,10 @@ end
 
 function loglik(θ::Tθ, Πroot::TΠ, 𝒪::ObservationTrajectory) where {Tθ, TΠ}
     @unpack X, Y = 𝒪
-    N = length(Y) - 1
-    h = h_from_observation(θ, Y[N+1])
+    N = length(Y) 
+    h = h_from_observation(θ, Y[N])
     loglik = zero(θ[1][1])
-    for i=N:-1:1
+    for i in (N-1):-1:1
         h = (Ki(θ,X[i]) * h) .* h_from_observation(θ, Y[i])
         c = normalise!(h)
         loglik += c
@@ -148,7 +156,8 @@ loglik(Πroot, 𝒪) = (θ) -> loglik(θ, Πroot, 𝒪)
 
 ∇loglik(Πroot, 𝒪) = (θ) -> ForwardDiff.gradient(loglik(Πroot, 𝒪), θ)
 
-function guided_track(θ, Πroot, 𝒪, H)# Generate approximate track
+
+function sample_guided(θ, Πroot, 𝒪, H)# Generate approximate track
     X = 𝒪.X
     N = length(H) - 1
     uprev = sample(Weights(Πroot .* H[1])) # Weighted prior distribution
@@ -175,7 +184,8 @@ Z0 = [0.5, 1.0, 1.5]
 println("true vals", "  ", γup,"  ", γdown,"  ", Z0)
 
 # Prior on root node
-Πroot = [1.0, 1.0, 1.0]/3.0
+#Πroot = [1.0, 1.0, 1.0]/3.0
+Πroot = [1.0, 0.0, 0.0]
 
 # generate covariates
 n = 40 # nr of subjects
@@ -195,42 +205,51 @@ for i in 2:n
 end
 
 ######### testing the code ################
+# generate track for one person
+U, 𝒪 =  sample(θ0, 𝒪s[1], Πroot) 
 
-# generate track  
-U, Y =  generate_track(θ0, 𝒪s[1], Πroot) 
-𝒪 = ObservationTrajectory(𝒪s[1].X,Y)
 # backward filter
 ll, H = loglik_and_bif(θ0, Πroot, 𝒪)
 # sample from conditioned process
-Uᵒ = guided_track(θ0, Πroot, 𝒪, H)
-# separately compute loglikelihood
-loglik(Πroot, 𝒪)(θ0)
-
-
-# generate tracks for all individuals
-for i in eachindex(𝒪s)
-    U, Y =  generate_track(θ0, 𝒪s[i], Πroot) 
-    𝒪s[i] = ObservationTrajectory(𝒪s[i].X, Y)
-end 
-
+Uᵒ = sample_guided(θ0, Πroot, 𝒪, H)
+# compute loglikelihood
 loglik(Πroot, 𝒪s)(θ0)
-
 
 # plotting 
 N = length(Uᵒ)
-ts = 0:(N-1)
+ts = 1:N
+Uᵒ = sample_guided(θ0, Πroot, 𝒪, H)
 pl_paths = plot(ts, Uᵒ, label="recovered")
 plot!(pl_paths, ts, U, label="latent", linestyle=:dash)
-#plot!(pl_paths, ts, ys .+ 1, label="observed")
+
 pl_paths
+
+
+######### end testing the code ################
+
+# generate tracks for all individuals
+for i in eachindex(𝒪s)
+    U, 𝒪 =  sample(θ0, 𝒪s[i], Πroot) 
+    𝒪s[i] = 𝒪
+end 
+
+
+
+
 
 #---------------------- check computing times
 @time loglik(Πroot, 𝒪s)(θ0);
-
 @time ∇loglik(Πroot, 𝒪s)(θ0);
 
-
-
+####### ForwardDiff is faster and allocates less than FiniteDiff ###########
+TESTING = false
+if TESTING
+    using FiniteDiff
+    using BenchmarkTools
+    ∇loglik_fd(Πroot, 𝒪) = (θ) -> FiniteDiff.finite_difference_gradient(loglik(Πroot, 𝒪), θ)
+    @btime ∇loglik_fd(Πroot, 𝒪)(θ0);
+    @btime ∇loglik(Πroot, 𝒪)(θ0);
+end
 ##########################################################################
 # use of Turing to sample from the posterior
 
@@ -265,6 +284,8 @@ model = logtarget(𝒪s, Πroot)
 # compute map and mle 
 @time map_estimate = optimize(model, MAP())
 #@time mle_estimate = optimize(model, MLE())
+
+println("true vals", "  ", γup,"  ", γdown,"  ", Z0)
 
 @time chain = sample(model, sampler, 1_000, init_params = map_estimate.values.array; progress=false);
 #@time chain = sample(model, sampler, 1_000)#; progress=true);
