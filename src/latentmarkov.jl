@@ -15,6 +15,7 @@ using PDMats
 using Turing
 using StatsPlots
 using BenchmarkTools
+using StaticArrays
 
 
 import StatsBase.sample
@@ -22,11 +23,13 @@ struct ObservationTrajectory{S,T}
     X::Vector{S}  # vector of covariates (each element of X contains the covariates at a particular time instance)
     Y::Vector{T}  # vector of responses (each element of Y contains a K-vector of responses to the K questions)
 end
-ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(fill(1,dimY), length(X)))  # constructor if only X is given
+#ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(fill(1,dimY), length(X)))  # constructor if only X is given
+ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(SA[1,1,1,1], length(X)))  # constructor if only X is given
 
 
 # transition kernel of the latent chain assuming 3 latent states
 Ki(θ,x) = [softmax([0.0, dot(x,θ.γ12), -Inf])' ; softmax([dot(x,θ.γ21), 0.0, dot(x,θ.γ23)])' ; softmax([-Inf, dot(x,θ.γ32), 0])']
+# can also be done with StaticArrays
 
 
 scaledandshifted_logistic(x) = 2.0logistic(x) -1.0 # function that maps [0,∞) to [0,1)
@@ -41,17 +44,19 @@ scaledandshifted_logistic(x) = 2.0logistic(x) -1.0 # function that maps [0,∞) 
 """
 function response(Z) 
         λ = scaledandshifted_logistic.(cumsum(Z))
-        Λ = Matrix{eltype(λ)}(undef , length(λ), 2)  # 2 comes from assuming binary answers to questions
-        for k in eachindex(λ)
-            Λ[k,:] =[  one(λ[k])-λ[k] λ[k] ]
-        end
-        Λ            
+        # Λ = Matrix{eltype(λ)}(undef , length(λ), 2)  # 2 comes from assuming binary answers to questions
+        # for k in eachindex(λ)
+        #     Λ[k,:] =[  one(λ[k])-λ[k] λ[k] ]
+        # end
+        # Λ            
+        SA[ one(λ[1])-λ[1] λ[1];  one(λ[2])-λ[2] λ[2];  one(λ[3])-λ[3] λ[3]]
 end
 
-Λi(θ) =[ response(θ.Z1), response(θ.Z2), response(θ.Z3), response(θ.Z4)    ]    # assume 4 questions
+Λi(θ) = SA[ response(θ.Z1), response(θ.Z2), response(θ.Z3), response(θ.Z4)    ]    # assume 4 questions
 
 
-sample_observation(Λ, u) =  [sample(Weights(Λ[i][u,:])) for i in eachindex(Λ)] # sample Y | U
+#sample_observation(Λ, u) =  [sample(Weights(Λ[i][u,:])) for i in eachindex(Λ)] # sample Y | U
+sample_observation(Λ, u) =  SA[sample(Weights(Λ[1][u,:])), sample(Weights(Λ[2][u,:])), sample(Weights(Λ[3][u,:])), sample(Weights(Λ[4][u,:])) ] # sample Y | U
 
 """
     sample(θ, 𝒪::ObservationTrajectory, Πroot)             
@@ -80,15 +85,16 @@ function sample(θ, 𝒪::ObservationTrajectory, Πroot)             # Generate 
 end
 
 
-function h_from_observation(θ::Tθ, y::Vector{T}) where {Tθ,T} 
+function h_from_observation(θ::Tθ, y::T) where {Tθ,T} 
     Λ = Λi(θ)
-    a1 = [Λ[i][:,y[i]] for i in eachindex(y)]  # only those indices where y is not missing, for an index where it is missing we can just send [1;1;1;1], or simply define y as such in case of missingness
-    out = [prod(first.(a1))]
-    K = length(a1[1])
-    for k in 2:K
-        push!(out,prod(getindex.(a1,k)) )
-    end
-    out
+    # a1 = [Λ[i][:,y[i]] for i in eachindex(y)]  # only those indices where y is not missing, for an index where it is missing we can just send [1;1;1;1], or simply define y as such in case of missingness
+    # out = [prod(first.(a1))]
+    # K = length(a1[1])
+    # for k in 2:K
+    #     push!(out,prod(getindex.(a1,k)) )
+    # end
+    # out
+    Λ[1][:,y[1]] .* Λ[2][:,y[2]] .* Λ[3][:,y[3]] .* Λ[4][:,y[4]]
 end
 
 function normalise!(x)
@@ -168,22 +174,22 @@ Z0 = [0.5, 1.0, 1.5]
 println("true vals", "  ", γup,"  ", γdown,"  ", Z0)
 
 # Prior on root node
-#Πroot = [1.0, 1.0, 1.0]/3.0
-Πroot = [1.0, 0.0, 0.0]
+#Πroot = SA[1.0, 1.0, 1.0]/3.0
+Πroot = SA[1.0, 0.0, 0.0]
 
 # generate covariates
 n = 40 # nr of subjects
 T = 30 # nr of times at which we observe
 
 # el1 = intensity, el2 = gender
-X = [ [0.05*t + 0.2*randn(), 0.0] for t in 1:T]
+X = [ SA[0.05*t + 0.2*randn(), 0.0] for t in 1:T]
 dimY = 4
 𝒪s = [ObservationTrajectory(X,dimY)]
 for i in 2:n
     if i ≤ 10 
-        X = [ [0.05*t + 0.2*randn(), 0.0] for t in 1:T]
+        X = [ SA[0.05*t + 0.2*randn(), 0.0] for t in 1:T]
     else
-        X = [ [-0.05*t + 0.2*randn(), 1.0] for t in 1:T]
+        X = [ SA[-0.05*t + 0.2*randn(), 1.0] for t in 1:T]
     end
     push!(𝒪s, ObservationTrajectory(X, dimY))
 end
@@ -217,7 +223,7 @@ println("true vals", "  ", γ12,"  ", γ21,"  ", Z0)
 sampler = DynamicNUTS() # HMC(0.05, 10);
 sampler = NUTS()
 #@time chain = sample(model, sampler, 1_00, init_params = map_estimate.values.array; progress=false);
-@time chain = sample(model, sampler, 1_000)#; progress=true);
+@time chain = sample(model, sampler, 1_00)#; progress=true);
 
 # plotting 
 histogram(chain)
