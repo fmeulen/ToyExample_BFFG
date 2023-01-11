@@ -16,6 +16,7 @@ using Turing
 using StatsPlots
 using BenchmarkTools
 
+
 import StatsBase.sample
 struct ObservationTrajectory{S,T}
     X::Vector{S}  # vector of covariates (each element of X contains the covariates at a particular time instance)
@@ -24,17 +25,19 @@ end
 ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(fill(1,dimY), length(X)))  # constructor if only X is given
 
 
-# transition kernel of the latent chain
+# transition kernel of the latent chain assuming 3 latent states
 Ki(θ,x) = [softmax([0.0, dot(x,θ.γ12), -Inf])' ; softmax([dot(x,θ.γ21), 0.0, dot(x,θ.γ23)])' ; softmax([-Inf, dot(x,θ.γ32), 0])']
 
-# construct transition kernel Λ to observations
-# we assume each element of the vector Z is nonnegative. A prior on 
-# λ1, λ2, λ3 is formed by setting λi = logistic(cumsum(Z)[i])
-# TODO consider better motivated choices
 
 scaledandshifted_logistic(x) = 2.0logistic(x) -1.0 # function that maps [0,∞) to [0,1)
+
 """
+    response(Z) 
+    
     make matrix [1.0-λ[1] λ[1]; 1.0-λ[2] λ[2]; 1.0-λ[3] λ[3]] (if 3 latent vars)
+
+    # construct transition kernel Λ to observations
+    # λ1, λ2, λ3 is formed by setting λi = logistic(cumsum(Z)[i])
 """
 function response(Z) 
         λ = scaledandshifted_logistic.(cumsum(Z))
@@ -45,10 +48,10 @@ function response(Z)
         Λ            
 end
 
-Λi(θ) =[ response(θ.Z1), response(θ.Z2), response(θ.Z3), response(θ.Z4)    ]
+Λi(θ) =[ response(θ.Z1), response(θ.Z2), response(θ.Z3), response(θ.Z4)    ]    # assume 4 questions
 
 
-sample_observation(Λ, u) =  [sample(Weights(Λ[i][u,:])) for i in eachindex(Λ)] 
+sample_observation(Λ, u) =  [sample(Weights(Λ[i][u,:])) for i in eachindex(Λ)] # sample Y | U
 
 """
     sample(θ, 𝒪::ObservationTrajectory, Πroot)             
@@ -111,22 +114,6 @@ function loglik_and_bif(θ, Πroot, 𝒪::ObservationTrajectory)
     (ll=loglik, H=H)          
 end
 
-
-
-# function loglik(θ::Tθ, Πroot::TΠ, 𝒪::ObservationTrajectory) where {Tθ, TΠ}
-#     @unpack X, Y = 𝒪
-#     N = length(Y) - 1
-#     hprev = h_from_observation(θ, Y[N+1])
-#     loglik = zero(θ[1][1])
-#     for i=N:-1:1
-#         h = (Ki(θ,X[i]) * hprev) .* h_from_observation(θ, Y[i])
-#         c = normalise!(h)
-#         loglik += c
-#         hprev = h
-#     end
-#     loglik + log(Πroot' * hprev)
-# end
-
 function loglik(θ::Tθ, Πroot::TΠ, 𝒪::ObservationTrajectory) where {Tθ, TΠ}
     @unpack X, Y = 𝒪
     N = length(Y) 
@@ -139,10 +126,6 @@ function loglik(θ::Tθ, Πroot::TΠ, 𝒪::ObservationTrajectory) where {Tθ, T
     end
     loglik + log(dot(h, Πroot))
 end
-
-
-
-
 
 # loglik for multiple persons
 function loglik(θ, Πroot, 𝒪s::Vector)
@@ -211,87 +194,30 @@ for i in eachindex(𝒪s)
     𝒪s[i] = 𝒪
 end 
 
-
-######### testing the code ################
-# generate track for one person
-U, 𝒪 =  sample(θ0, 𝒪s[1], Πroot) 
-
-# backward filter
-ll, H = loglik_and_bif(θ0, Πroot, 𝒪)
-# sample from conditioned process
-Uᵒ = sample_guided(θ0, Πroot, 𝒪, H)
-# compute loglikelihood
-loglik(Πroot, 𝒪s)(θ0)
-
-# plotting 
-N = length(Uᵒ) 
-ts = 1:N
-Uᵒ = sample_guided(θ0, Πroot, 𝒪, H)
-pl_paths = plot(ts, Uᵒ, label="recovered")
-plot!(pl_paths, ts, U, label="latent", linestyle=:dash)
-
-pl_paths
-
-
-######### end testing the code ################
-
-
-
-
-
-
-#---------------------- check computing times
-@btime loglik(Πroot, 𝒪s)(θ0);           # 3.495 ms (59402 allocations: 4.47 MiB)
-@btime ∇loglik(Πroot, 𝒪s)(θ0);          # 13.773 ms (148972 allocations: 39.99 MiB)
-
-####### ForwardDiff is faster and allocates less than FiniteDiff ###########
-TESTING = false
-if TESTING
-    using FiniteDiff
-    using BenchmarkTools
-    ∇loglik_fd(Πroot, 𝒪) = (θ) -> FiniteDiff.finite_difference_gradient(loglik(Πroot, 𝒪), θ)
-    @btime ∇loglik_fd(Πroot, 𝒪)(θ0);
-    @btime ∇loglik(Πroot, 𝒪)(θ0);
-end
-##########################################################################
 # use of Turing to sample from the posterior
 
+
 @model function logtarget(𝒪s, Πroot)
-    γup ~ Normal(0,3)
-    γdown ~ Normal(0,3)
-    γ12 = γ23 = [γup, 0.0]
-    γ21 = γ32 = [γdown, -0.1]
+    γ12 ~ filldist(Normal(0,2),2)#MvNormal(fill(0.0, 2), 2.0 * I)
+    γ21  ~ filldist(Normal(0,2),2)  #MvNormal(fill(0.0, 2), 2.0 * I)
     Z0 ~ filldist(Exponential(), 3) 
-    Turing.@addlogprob! loglik(Πroot, 𝒪s)(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ23, γ32 = γ32, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0))
+    Turing.@addlogprob! loglik(Πroot, 𝒪s)(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ12, γ32 = γ21, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0))
+    Turing.@addlogprob! loglik(Πroot, 𝒪s)((γ12=γ12, γ21 = γ21, γ23 = γ12, γ32 = γ21, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0))
 end
 
-# @model function logtarget2(𝒪s, Πroot, K)  # K is nr of latent states (turns out that be much slower)
-#     γup ~ Normal(0,3)
-#     γdown ~ Normal(0,3)
-#     γ12 = γ23 = [γup, 0.0]
-#     γ21 = γ32 = [γdown, -0.1]
-#     r ~ Dirichlet(fill(1,K+1))
-#    # r ~ filldist(Gamma(2.0,1.0), K+1)
-#     Z0 = cumsum(r)[1:K] #/sum(r)
-#     Turing.@addlogprob! loglik(Πroot, 𝒪s)(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ23, γ32 = γ32, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0))
-# end
 
-
-
-  
-
-# multiple samplers to choose from, such as 
-sampler = DynamicNUTS() # HMC(0.05, 10);
 model = logtarget(𝒪s, Πroot)
 
 # compute map and mle 
 @time map_estimate = optimize(model, MAP())
-#@time mle_estimate = optimize(model, MLE())
+@time mle_estimate = optimize(model, MLE())
 
-println("true vals", "  ", γup,"  ", γdown,"  ", Z0)
+println("true vals", "  ", γ12,"  ", γ21,"  ", Z0)
 
-@time chain = sample(model, sampler, 1_000, init_params = map_estimate.values.array; progress=false);
-#@time chain = sample(model, sampler, 1_000)#; progress=true);
+sampler = DynamicNUTS() # HMC(0.05, 10);
+sampler = NUTS()
+#@time chain = sample(model, sampler, 1_00, init_params = map_estimate.values.array; progress=false);
+@time chain = sample(model, sampler, 1_000)#; progress=true);
 
 # plotting 
 histogram(chain)
@@ -305,35 +231,4 @@ describe(chain)[2]
 
 
 
-
-
-# TODO: profiling
-# using ProfileView
-
-# ProfileView.@profview loglik(θ0, Πroot, 𝒪s)
-# ProfileView.@profview ∇loglik(Πroot, 𝒪)(θ0)
-
-# @code_warntype loglik(θ0, Πroot, 𝒪s[1])
-# @code_warntype loglik(θ0, Πroot, 𝒪s)
-
-# y =𝒪s[1].Y[2]
-# θ = θ0
-# @code_warntype h_from_observation(θ, y)
-
-# @code_warntype ∇loglik(Πroot, 𝒪s[1])(θ0);
-
-#using BenchmarkTools
-
-
-# l = @layout [a  b;  c d ; e d]
-# getindex.(getindex.(ps_t,:γ12),2)
-# getindex.(getindex.(ps_t,:Z1),3)
-# plot(getindex.(getindex.(ps_t,:γ12),1),label="γ12"); 
-# hline!([θ0.p],label="")
-# pl_p2 = histogram(getindex.(ps_t,:p),label=""); vline!([θ0.p],label="")
-# pl_q = plot(getindex.(ps_t,:q),label="q"); hline!([θ0.q],label="")
-# pl_q2 = histogram(getindex.(ps_t,:q),label=""); vline!([θ0.q],label="")
-# pl_r = plot(getindex.(ps_t,:r),label="r"); hline!([θ0.r],label="")
-# pl_r2 = histogram(getindex.(ps_t,:r),label=""); vline!([θ0.r],label="")
-# plot(pl_p, pl_p2, pl_q, pl_q2, pl_r, pl_r2, layout=l)
 
