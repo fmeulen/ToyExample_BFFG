@@ -16,7 +16,7 @@ using Turing
 using StatsPlots
 using BenchmarkTools
 using StaticArrays
-
+using NNlib # for softmax
 
 import StatsBase.sample
 struct ObservationTrajectory{S,T}
@@ -28,10 +28,11 @@ ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(SA[1,1,1,1], leng
 
 
 # transition kernel of the latent chain assuming 3 latent states
-Ki(θ,x) = [softmax([0.0, dot(x,θ.γ12), -Inf])' ; softmax([dot(x,θ.γ21), 0.0, dot(x,θ.γ23)])' ; softmax([-Inf, dot(x,θ.γ32), 0])']
+#Ki(θ,x) = [StatsFuns.softmax([0.0, dot(x,θ.γ12), -Inf])' ; StatsFuns.softmax([dot(x,θ.γ21), 0.0, dot(x,θ.γ23)])' ; StatsFuns.softmax([-Inf, dot(x,θ.γ32), 0])']
 # can also be done with StaticArrays
-
-
+Ki(θ,x)= NNlib.softmax([0.0 dot(x,θ.γ12) -Inf; dot(x,θ.γ21) 0.0 dot(x,θ.γ23) ; -Inf dot(x,θ.γ32) 0];dims=2)  # slightly faster, though almost double allocation
+ 
+ 
 scaledandshifted_logistic(x) = 2.0logistic(x) -1.0 # function that maps [0,∞) to [0,1)
 
 """
@@ -99,9 +100,9 @@ end
 
 function normalise!(x)
     s = sum(x)
-    x .= x/s
     log(s)
 end
+
 
 function loglik_and_bif(θ, Πroot, 𝒪::ObservationTrajectory)
     @unpack X, Y = 𝒪
@@ -126,7 +127,10 @@ function loglik(θ::Tθ, Πroot::TΠ, 𝒪::ObservationTrajectory) where {Tθ, T
     h = h_from_observation(θ, Y[N])
     loglik = zero(θ[1][1])
     for i in (N-1):-1:1
-        h = (Ki(θ,X[i]) * h) .* h_from_observation(θ, Y[i])
+       # K = Ki(θ,X[i]) 
+        K = @SMatrix ones(3,3)
+        h = (K * h) .* h_from_observation(θ, Y[i])
+        #@show typeof(h)
         c = normalise!(h)
         loglik += c
     end
@@ -186,6 +190,7 @@ X = [ SA[0.05*t + 0.2*randn(), 0.0] for t in 1:T]
 dimY = 4
 𝒪s = [ObservationTrajectory(X,dimY)]
 for i in 2:n
+    local X 
     if i ≤ 10 
         X = [ SA[0.05*t + 0.2*randn(), 0.0] for t in 1:T]
     else
@@ -207,8 +212,8 @@ end
     γ12 ~ filldist(Normal(0,2),2)#MvNormal(fill(0.0, 2), 2.0 * I)
     γ21  ~ filldist(Normal(0,2),2)  #MvNormal(fill(0.0, 2), 2.0 * I)
     Z0 ~ filldist(Exponential(), 3) 
-    Turing.@addlogprob! loglik(Πroot, 𝒪s)(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ12, γ32 = γ21, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0))
-    Turing.@addlogprob! loglik(Πroot, 𝒪s)((γ12=γ12, γ21 = γ21, γ23 = γ12, γ32 = γ21, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0))
+    #Turing.@addlogprob! loglik(Πroot, 𝒪s)(θ)
+    Turing.@addlogprob! loglik(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ12, γ32 = γ21, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0), Πroot, 𝒪s)
 end
 
 
@@ -220,10 +225,12 @@ model = logtarget(𝒪s, Πroot)
 
 println("true vals", "  ", γ12,"  ", γ21,"  ", Z0)
 
-sampler = DynamicNUTS() # HMC(0.05, 10);
+#sampler = DynamicNUTS() # HMC(0.05, 10);
 sampler = NUTS()
+
+
 #@time chain = sample(model, sampler, 1_00, init_params = map_estimate.values.array; progress=false);
-@time chain = sample(model, sampler, 1_00)#; progress=true);
+@time chain = sample(model, sampler, 1000)#; progress=true);
 
 # plotting 
 histogram(chain)
@@ -231,8 +238,9 @@ savefig("latentmarkov_histograms.png")
 plot(chain)
 savefig("latentmarkov_traceplots_histograms.png")
 
-describe(chain)[1]
-describe(chain)[2]
+@show chain 
+# describe(chain)[1]
+# describe(chain)[2]
 
 
 
