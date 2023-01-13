@@ -19,11 +19,13 @@ using StaticArrays
 using NNlib # for softmax
 
 import StatsBase.sample
+
 struct ObservationTrajectory{S,T}
     X::Vector{S}  # vector of covariates (each element of X contains the covariates at a particular time instance)
     Y::Vector{T}  # vector of responses (each element of Y contains a K-vector of responses to the K questions)
 end
 #ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(fill(1,dimY), length(X)))  # constructor if only X is given
+
 ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(SA[1,1,1,1], length(X)))  # constructor if only X is given
 
 
@@ -67,16 +69,16 @@ sample_observation(Λ, u) =  SA[sample(Weights(Λ[1][u,:])), sample(Weights(Λ[2
     samples U_1,..., U_n and Y_1,..., Y_n, where 
     U_1 ~ Πroot
     for i ≥ 2 
-        U_i | X_{i-1}, U_{i-1} ~ Row_{U_{i-1}} K(θ,X_{i-1})
+        U_i | X_{i}, U_{i-1} ~ Row_{U_{i-1}} K(θ,X_{i})
     (thus, last element of X are not used)
 
 """
 function sample(θ, 𝒪::ObservationTrajectory, Πroot)             # Generate exact track + observations
     X = 𝒪.X
     Λ = Λi(θ)
-    uprev = sample(Weights(Πroot))                  # sample x0
+    uprev = sample(Weights(Πroot))                  # sample u1 (possibly depending on X[1])
     U = [uprev]
-    for i in eachindex(X[1:(end-1)])
+    for i in eachindex(X[2:end])
         u = sample(Weights(Ki(θ,X[i])[uprev,:]))         # Generate sample from previous state
         push!(U, copy(u))
         uprev = u
@@ -110,8 +112,8 @@ function loglik_and_bif(θ, Πroot, 𝒪::ObservationTrajectory)
     hprev = h_from_observation(θ, Y[N])
     H = [hprev]
     loglik = zero(θ[1][1])
-    for i in (N-1):-1:1
-        h = (Ki(θ,X[i]) * hprev) .* h_from_observation(θ, Y[i])
+    for i in N:-1:2
+        h = (Ki(θ,X[i]) * hprev) .* h_from_observation(θ, Y[i-1])
         c = normalise!(h)
         loglik += c
         pushfirst!(H, copy(ForwardDiff.value.(h)))
@@ -126,16 +128,18 @@ function loglik(θ::Tθ, Πroot::TΠ, 𝒪::ObservationTrajectory) where {Tθ, T
     N = length(Y) 
     h = h_from_observation(θ, Y[N])
     loglik = zero(θ[1][1])
-    for i in (N-1):-1:1
-       # K = Ki(θ,X[i]) 
-        K = @SMatrix ones(3,3)
-        h = (K * h) .* h_from_observation(θ, Y[i])
+    for i in N:-1:2
+        K = Ki(θ,X[i]) 
+       # K = @SMatrix ones(3,3)
+        h = (K * h) .* h_from_observation(θ, Y[i-1])
         #@show typeof(h)
         c = normalise!(h)
         loglik += c
     end
     loglik + log(dot(h, Πroot))
 end
+
+# to do: make Πroot depend on X[1]
 
 # loglik for multiple persons
 function loglik(θ, Πroot, 𝒪s::Vector)
@@ -150,14 +154,14 @@ loglik(Πroot, 𝒪) = (θ) -> loglik(θ, Πroot, 𝒪)
 
 ∇loglik(Πroot, 𝒪) = (θ) -> ForwardDiff.gradient(loglik(Πroot, 𝒪), θ)
 
-
+# check
 function sample_guided(θ, Πroot, 𝒪, H)# Generate approximate track
     X = 𝒪.X
-    N = length(H) - 1
+    N = length(H) # check -1?
     uprev = sample(Weights(Πroot .* H[1])) # Weighted prior distribution
     uᵒ = [uprev]
-    for i=1:N
-            w = Ki(θ,X[i])[uprev,:] .* H[i+1]         # Weighted transition density
+    for i=2:N
+            w = Ki(θ,X[i])[uprev,:] .* H[i]         # Weighted transition density
             u = sample(Weights(w))
             push!(uᵒ, u)
             uprev = u
