@@ -17,8 +17,13 @@ using StatsPlots
 using BenchmarkTools
 using StaticArrays
 using NNlib # for softmax
-
 import StatsBase.sample
+
+# Y_i depends on U_i
+# U_i depends on U_{i-1}, X_i
+# u_1 depends on Πroot(X1)
+
+
 
 struct ObservationTrajectory{S,T}
     X::Vector{S}  # vector of covariates (each element of X contains the covariates at a particular time instance)
@@ -28,14 +33,28 @@ end
 
 ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(SA[1,1,1,1], length(X)))  # constructor if only X is given
 
+# Prior on root node (x can be inital state)
+Πroot(x) = SA[1.0, 1.0, 1.0]/3.0    ##Πroot = SA[1.0, 0.0, 0.0]
+
+
 
 # transition kernel of the latent chain assuming 3 latent states
 #Ki(θ,x) = [StatsFuns.softmax([0.0, dot(x,θ.γ12), -Inf])' ; StatsFuns.softmax([dot(x,θ.γ21), 0.0, dot(x,θ.γ23)])' ; StatsFuns.softmax([-Inf, dot(x,θ.γ32), 0])']
 # can also be done with StaticArrays
-Ki(θ,x)= NNlib.softmax([0.0 dot(x,θ.γ12) -Inf; dot(x,θ.γ21) 0.0 dot(x,θ.γ23) ; -Inf dot(x,θ.γ32) 0];dims=2)  # slightly faster, though almost double allocation
- 
+
+# to avoid type instability, both Ki methods should return an element of the same type 
+Ki(θ,x)= SMatrix{3,3}( NNlib.softmax([0.0 dot(x,θ.γ12) -Inf; dot(x,θ.γ21) 0.0 dot(x,θ.γ23) ; -Inf dot(x,θ.γ32) 0.0];dims=2) ) # slightly faster, though almost double allocation
+Ki(θ,x::Vector{Missing}) = Matrix{Float64}(I, 3, 3) #I#SMatrix{3,3}(1.0I)
  
 scaledandshifted_logistic(x) = 2.0logistic(x) -1.0 # function that maps [0,∞) to [0,1)
+
+function pullback(θ,x,h) # compute Ki(θ,x)*h
+    a1 = dot(StatsFuns.softmax(SA[0.0, dot(x,θ.γ12), -Inf]),h)
+    a2 = dot(StatsFuns.softmax(SA[dot(x,θ.γ21), 0.0 ,dot(x,θ.γ23)]),h)
+    a3 = dot(StatsFuns.softmax(SA[-Inf, dot(x,θ.γ32), 0.0]),h)
+    SA[a1,a2,a3]
+end
+pullback(θ,x::Vector{Missing},h) = h
 
 """
     response(Z) 
@@ -62,7 +81,7 @@ end
 sample_observation(Λ, u) =  SA[sample(Weights(Λ[1][u,:])), sample(Weights(Λ[2][u,:])), sample(Weights(Λ[3][u,:])), sample(Weights(Λ[4][u,:])) ] # sample Y | U
 
 """
-    sample(θ, 𝒪::ObservationTrajectory, Πroot)             
+    sample(θ, 𝒪::ObservationTrajectory)             
 
     𝒪.X: vector of covariates, say of length n
     
@@ -73,10 +92,10 @@ sample_observation(Λ, u) =  SA[sample(Weights(Λ[1][u,:])), sample(Weights(Λ[2
     (thus, last element of X are not used)
 
 """
-function sample(θ, 𝒪::ObservationTrajectory, Πroot)             # Generate exact track + observations
+function sample(θ, 𝒪::ObservationTrajectory)             # Generate exact track + observations
     X = 𝒪.X
     Λ = Λi(θ)
-    uprev = sample(Weights(Πroot))                  # sample u1 (possibly depending on X[1])
+    uprev = sample(Weights(Πroot(X[1])))                  # sample u1 (possibly depending on X[1])
     U = [uprev]
     for i in eachindex(X[2:end])
         u = sample(Weights(Ki(θ,X[i])[uprev,:]))         # Generate sample from previous state
@@ -88,6 +107,10 @@ function sample(θ, 𝒪::ObservationTrajectory, Πroot)             # Generate 
 end
 
 
+h_from_one_observation(Λ, i::Int) = Λ[:,i]
+h_from_one_observation(Λ, i::Missing) = SA[1.0,1.0,1.0]
+
+
 function h_from_observation(θ::Tθ, y::T) where {Tθ,T} 
     Λ = Λi(θ)
     # a1 = [Λ[i][:,y[i]] for i in eachindex(y)]  # only those indices where y is not missing, for an index where it is missing we can just send [1;1;1;1], or simply define y as such in case of missingness
@@ -97,7 +120,7 @@ function h_from_observation(θ::Tθ, y::T) where {Tθ,T}
     #     push!(out,prod(getindex.(a1,k)) )
     # end
     # out
-    Λ[1][:,y[1]] .* Λ[2][:,y[2]] .* Λ[3][:,y[3]] .* Λ[4][:,y[4]]
+    h_from_one_observation(Λ[1],y[1]) .* h_from_one_observation(Λ[2],y[2]) .* h_from_one_observation(Λ[3],y[3]) .* h_from_one_observation(Λ[4],y[4])
 end
 
 function normalise!(x)
@@ -106,7 +129,7 @@ function normalise!(x)
 end
 
 
-function loglik_and_bif(θ, Πroot, 𝒪::ObservationTrajectory)
+function loglik_and_bif(θ, 𝒪::ObservationTrajectory)
     @unpack X, Y = 𝒪
     N = length(Y) 
     hprev = h_from_observation(θ, Y[N])
@@ -119,46 +142,45 @@ function loglik_and_bif(θ, Πroot, 𝒪::ObservationTrajectory)
         pushfirst!(H, copy(ForwardDiff.value.(h)))
         hprev = h
     end
-    loglik += log(dot(hprev, Πroot))
+    loglik += log(dot(hprev, Πroot(X[1])))
     (ll=loglik, H=H)          
 end
 
-function loglik(θ::Tθ, Πroot::TΠ, 𝒪::ObservationTrajectory) where {Tθ, TΠ}
+function loglik(θ, 𝒪::ObservationTrajectory) 
     @unpack X, Y = 𝒪
     N = length(Y) 
     h = h_from_observation(θ, Y[N])
     loglik = zero(θ[1][1])
     for i in N:-1:2
-        K = Ki(θ,X[i]) 
-       # K = @SMatrix ones(3,3)
-        h = (K * h) .* h_from_observation(θ, Y[i-1])
-        #@show typeof(h)
+        # K = Ki(θ,X[i]) 
+        # h = (K * h) .* h_from_observation(θ, Y[i-1])
+        h = pullback(θ, X[i], h) .* h_from_observation(θ, Y[i-1])
         c = normalise!(h)
         loglik += c
     end
-    loglik + log(dot(h, Πroot))
+    loglik + log(dot(h, Πroot(X[1])))
 end
 
 # to do: make Πroot depend on X[1]
 
 # loglik for multiple persons
-function loglik(θ, Πroot, 𝒪s::Vector)
+function loglik(θ, 𝒪s::Vector)
     ll = zero(θ[1][1])
     for i ∈ eachindex(𝒪s)
-        ll += loglik(θ, Πroot, 𝒪s[i])
+        ll += loglik(θ, 𝒪s[i])
     end
     ll 
 end
 
-loglik(Πroot, 𝒪) = (θ) -> loglik(θ, Πroot, 𝒪) 
+loglik(𝒪) = (θ) -> loglik(θ, 𝒪) 
 
-∇loglik(Πroot, 𝒪) = (θ) -> ForwardDiff.gradient(loglik(Πroot, 𝒪), θ)
+∇loglik(𝒪) = (θ) -> ForwardDiff.gradient(loglik(𝒪), θ)
 
 # check
-function sample_guided(θ, Πroot, 𝒪, H)# Generate approximate track
+function sample_guided(θ, 𝒪, H)# Generate approximate track
     X = 𝒪.X
     N = length(H) # check -1?
-    uprev = sample(Weights(Πroot .* H[1])) # Weighted prior distribution
+    uprev = sample(Weights(Πroot(X[1]) .* H[1])) # Weighted prior distribution
     uᵒ = [uprev]
     for i=2:N
             w = Ki(θ,X[i])[uprev,:] .* H[i]         # Weighted transition density
@@ -181,9 +203,6 @@ Z0 = [0.5, 1.0, 1.5]
 
 println("true vals", "  ", γup,"  ", γdown,"  ", Z0)
 
-# Prior on root node
-#Πroot = SA[1.0, 1.0, 1.0]/3.0
-Πroot = SA[1.0, 0.0, 0.0]
 
 # generate covariates
 n = 40 # nr of subjects
@@ -205,23 +224,22 @@ end
 
 # generate tracks for all individuals
 for i in eachindex(𝒪s)
-    U, 𝒪 =  sample(θ0, 𝒪s[i], Πroot) 
+    U, 𝒪 =  sample(θ0, 𝒪s[i]) 
     𝒪s[i] = 𝒪
 end 
 
 # use of Turing to sample from the posterior
 
 
-@model function logtarget(𝒪s, Πroot)
+@model function logtarget(𝒪s)
     γ12 ~ filldist(Normal(0,2),2)#MvNormal(fill(0.0, 2), 2.0 * I)
     γ21  ~ filldist(Normal(0,2),2)  #MvNormal(fill(0.0, 2), 2.0 * I)
     Z0 ~ filldist(Exponential(), 3) 
-    #Turing.@addlogprob! loglik(Πroot, 𝒪s)(θ)
-    Turing.@addlogprob! loglik(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ12, γ32 = γ21, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0), Πroot, 𝒪s)
+    Turing.@addlogprob! loglik(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ12, γ32 = γ21, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0), 𝒪s)
 end
 
 
-model = logtarget(𝒪s, Πroot)
+model = logtarget(𝒪s)
 
 # compute map and mle 
 @time map_estimate = optimize(model, MAP())

@@ -1,18 +1,34 @@
+ind = rand(4)
+
+struct TT
+    a
+    b
+    c
+end
+t = TT(2,3,5)
+SVector(ntuple(i-> getproperty(t,ind[i]), length(ind)))
+
+ x = [2.3, 4.5]
+SVector(ntuple(i-> 3*x[i], length(x)))
+
+Ki(θ,x)= NNlib.softmax([0.0 dot(x,θ.γ12) -Inf; dot(x,θ.γ21) 0.0 dot(x,θ.γ23) ; -Inf dot(x,θ.γ32) 0.0];dims=2)  # slightly faster, though almost double allocation
+
+
 ######### testing code for latentmarkov.jl ################
 # generate track for one person
-U, 𝒪 =  sample(θ0, 𝒪s[1], Πroot) 
+U, 𝒪 =  sample(θ0, 𝒪s[1]) 
 
 # backward filter
-ll, H = loglik_and_bif(θ0, Πroot, 𝒪)
+ll, H = loglik_and_bif(θ0, 𝒪)
 # sample from conditioned process
-Uᵒ = sample_guided(θ0, Πroot, 𝒪, H)
+Uᵒ = sample_guided(θ0, 𝒪, H)
 # compute loglikelihood
-loglik(Πroot, 𝒪s)(θ0)
+loglik(𝒪s)(θ0)
 
 # plotting 
 N = length(Uᵒ) 
 ts = 1:N
-Uᵒ = sample_guided(θ0, Πroot, 𝒪, H)
+Uᵒ = sample_guided(θ0, 𝒪, H)
 pl_paths = plot(ts, Uᵒ, label="recovered")
 plot!(pl_paths, ts, U, label="latent", linestyle=:dash)
 
@@ -21,18 +37,48 @@ pl_paths
 
 ######### end testing the code ################
 
+function loglik2(θ, 𝒪::ObservationTrajectory) 
+    @unpack X, Y = 𝒪
+    N = length(Y) 
+    h = h_from_observation(θ, Y[N])
+    loglik = zero(θ[1][1])
+    for i in N:-1:2
+         K = Ki(θ,X[i]) 
+         h = (K * h) .* h_from_observation(θ, Y[i-1])
+        #h = pullback(θ, X[i], h) .* h_from_observation(θ, Y[i-1])
+        c = normalise!(h)
+        loglik += c
+    end
+    loglik + log(dot(h, Πroot(X[1])))
+end
 
+@btime loglik(θ0, 𝒪s[1]); # 23.041 μs (416 allocations: 32.39 KiB)
+@btime loglik2(θ0, 𝒪s[1]); # 32.916 μs (677 allocations: 39.64 KiB)
+
+loglik2(𝒪) = (θ) -> loglik2(θ, 𝒪) 
+∇loglik2(𝒪) = (θ) -> ForwardDiff.gradient(loglik2(𝒪), θ)
+
+@btime ∇loglik(𝒪s[1])(θ0); #210.917 μs (1950 allocations: 387.45 KiB)
+@btime ∇loglik2(𝒪s[1])(θ0); #129.917 μs (2413 allocations: 600.41 KiB)
 
 
     #---------------------- check computing times
     
-    @btime loglik(Πroot, 𝒪s)(θ0);           # 3.495 ms (59402 allocations: 4.47 MiB)
-    @btime ∇loglik(Πroot, 𝒪s)(θ0);          # 13.773 ms (148972 allocations: 39.99 MiB)
+    @btime loglik(𝒪s)(θ0);           # 3.495 ms (59402 allocations: 4.47 MiB)
+    @btime ∇loglik(𝒪s)(θ0);          # 13.773 ms (148972 allocations: 39.99 MiB)
+
+    # use StatsFuns for softmax
+    x = rand(2); h = rand(3)
+    @btime dot(StatsFuns.softmax([0.0, dot(x,θ0.γ12), -Inf]),h)
+    @btime dot(NNlib.softmax([0.0, dot(x,θ0.γ12), -Inf]),h)
 
     #---------------------- check type stability
-    @code_warntype loglik(Πroot, 𝒪s[1])(θ0)
-    @code_warntype loglik(θ0, Πroot, 𝒪s[1])
-    @code_warntype loglik(θ0, Πroot, 𝒪s)
+    @code_warntype loglik(𝒪s[1])(θ0)
+    @code_warntype loglik(θ0, 𝒪s[1])
+    @code_warntype loglik2(θ0, 𝒪s[1])
+    @code_warntype loglik(θ0, 𝒪s)
+
+@code_warntype h_from_observation(θ0, 𝒪s[1].Y)
 
     using Cthulhu
 
@@ -41,9 +87,9 @@ pl_paths
     if TESTING
         using FiniteDiff
         using BenchmarkTools
-        ∇loglik_fd(Πroot, 𝒪) = (θ) -> FiniteDiff.finite_difference_gradient(loglik(Πroot, 𝒪), θ)
-        @btime ∇loglik_fd(Πroot, 𝒪)(θ0);
-        @btime ∇loglik(Πroot, 𝒪)(θ0);
+        ∇loglik_fd(𝒪) = (θ) -> FiniteDiff.finite_difference_gradient(loglik(𝒪), θ)
+        @btime ∇loglik_fd(𝒪)(θ0);
+        @btime ∇loglik(𝒪)(θ0);
     end
 
 
