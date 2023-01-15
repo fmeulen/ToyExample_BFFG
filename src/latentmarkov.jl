@@ -38,8 +38,6 @@ ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(SA[1,1,1,1], leng
 # Prior on root node (x can be inital state)
 Πroot(x) = (@SVector ones(NUM_HIDDENSTATES))/3.0    
 
-
-
 # transition kernel of the latent chain assuming 3 latent states
 #Ki(θ,x) = [StatsFuns.softmax([0.0, dot(x,θ.γ12), -Inf])' ; StatsFuns.softmax([dot(x,θ.γ21), 0.0, dot(x,θ.γ23)])' ; StatsFuns.softmax([-Inf, dot(x,θ.γ32), 0])']
 # can also be done with StaticArrays
@@ -83,9 +81,9 @@ end
 sample_observation(Λ, u) =  SA[sample(Weights(Λ[1][u,:])), sample(Weights(Λ[2][u,:])), sample(Weights(Λ[3][u,:])), sample(Weights(Λ[4][u,:])) ] # sample Y | U
 
 """
-    sample(θ, 𝒪::ObservationTrajectory)             
+    sample(θ, X)             
 
-    𝒪.X: vector of covariates, say of length n
+    X: vector of covariates, say of length n
     
     samples U_1,..., U_n and Y_1,..., Y_n, where 
     U_1 ~ Πroot
@@ -94,8 +92,7 @@ sample_observation(Λ, u) =  SA[sample(Weights(Λ[1][u,:])), sample(Weights(Λ[2
     (thus, last element of X are not used)
 
 """
-function sample(θ, X)# 𝒪::ObservationTrajectory)             # Generate exact track + observations
-    #X = 𝒪.X
+function sample(θ, X)            # Generate exact track + observations
     Λ = Λi(θ)
     uprev = sample(Weights(Πroot(X[1])))                  # sample u1 (possibly depending on X[1])
     U = [uprev]
@@ -105,7 +102,6 @@ function sample(θ, X)# 𝒪::ObservationTrajectory)             # Generate exac
         uprev = u
     end
     Y = [sample_observation(Λ, u) for u ∈ U]
-    #(U, ObservationTrajectory(𝒪.X, Y))
     U, Y
 end
 
@@ -163,7 +159,6 @@ function loglik(θ, 𝒪::ObservationTrajectory)
     loglik + log(dot(h, Πroot(X[1])))
 end
 
-# to do: make Πroot depend on X[1]
 
 # loglik for multiple persons
 function loglik(θ, 𝒪s::Vector)
@@ -205,14 +200,10 @@ Z0 = [0.5, 1.0, 1.5]
 
 println("true vals", "  ", γup,"  ", γdown,"  ", Z0)
 
-
 # generate covariates
 n = 20 # nr of subjects
 T = 15 # nr of times at which we observe
-
 # el1 = intensity, el2 = gender
-
-
 
 TX = Union{Missing, SVector{DIM_COVARIATES,Float64}} # indien er missing vals zijn 
 TY = Union{Missing, SVector{DIM_RESPONSE, Int64}}
@@ -240,23 +231,17 @@ for i in 1:n
     for t in  2:(T-1)
         push!(YY, Y[t]) 
     end    
-    
     push!(𝒪s, ObservationTrajectory(X, YY))
 end
 
-
-
-
-# use of Turing to sample from the posterior
-
+############ use of Turing to sample from the posterior ################
 
 @model function logtarget(𝒪s)
     γ12 ~ filldist(Normal(0,2), DIM_COVARIATES)#MvNormal(fill(0.0, 2), 2.0 * I)
-    γ21  ~ filldist(Normal(0,2), DIM_COVARIATES)  #MvNormal(fill(0.0, 2), 2.0 * I)
+    γ21 ~ filldist(Normal(0,2), DIM_COVARIATES)  #MvNormal(fill(0.0, 2), 2.0 * I)
     Z0 ~ filldist(Exponential(), NUM_HIDDENSTATES) 
     Turing.@addlogprob! loglik(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ12, γ32 = γ21, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0), 𝒪s)
 end
-
 
 model = logtarget(𝒪s)
 
@@ -269,8 +254,6 @@ println("true vals", "  ", γ12,"  ", γ21,"  ", Z0)
 #sampler = DynamicNUTS() # HMC(0.05, 10);
 sampler = NUTS()
 
-
-#@time chain = sample(model, sampler, 1_00, init_params = map_estimate.values.array; progress=false);
 @time chain = sample(model, sampler, 1000)#; progress=true);
 
 # plotting 
