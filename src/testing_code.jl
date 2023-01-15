@@ -75,8 +75,9 @@ loglik2(𝒪) = (θ) -> loglik2(θ, 𝒪)
     #---------------------- check type stability
     @code_warntype loglik(𝒪s[1])(θ0)
     @code_warntype loglik(θ0, 𝒪s[1])
-    @code_warntype loglik2(θ0, 𝒪s[1])
     @code_warntype loglik(θ0, 𝒪s)
+    @code_warntype loglik2(θ0, 𝒪s[1])
+
 
 @code_warntype h_from_observation(θ0, 𝒪s[1].Y)
 
@@ -146,3 +147,5 @@ loglik2(𝒪) = (θ) -> loglik2(θ, 𝒪)
     #     Z0 = cumsum(r)[1:K] #/sum(r)
     #     Turing.@addlogprob! loglik(Πroot, 𝒪s)(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ23, γ32 = γ32, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0))
     # end
+
+

@@ -23,7 +23,9 @@ import StatsBase.sample
 # U_i depends on U_{i-1}, X_i
 # u_1 depends on Πroot(X1)
 
-
+const NUM_HIDDENSTATES = 3
+const DIM_COVARIATES = 2
+const DIM_RESPONSE = 4
 
 struct ObservationTrajectory{S,T}
     X::Vector{S}  # vector of covariates (each element of X contains the covariates at a particular time instance)
@@ -34,7 +36,7 @@ end
 ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(SA[1,1,1,1], length(X)))  # constructor if only X is given
 
 # Prior on root node (x can be inital state)
-Πroot(x) = SA[1.0, 1.0, 1.0]/3.0    ##Πroot = SA[1.0, 0.0, 0.0]
+Πroot(x) = (@SVector ones(NUM_HIDDENSTATES))/3.0    
 
 
 
@@ -43,8 +45,8 @@ ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(SA[1,1,1,1], leng
 # can also be done with StaticArrays
 
 # to avoid type instability, both Ki methods should return an element of the same type 
-Ki(θ,x)= SMatrix{3,3}( NNlib.softmax([0.0 dot(x,θ.γ12) -Inf; dot(x,θ.γ21) 0.0 dot(x,θ.γ23) ; -Inf dot(x,θ.γ32) 0.0];dims=2) ) # slightly faster, though almost double allocation
-Ki(θ,x::Vector{Missing}) = Matrix{Float64}(I, 3, 3) #I#SMatrix{3,3}(1.0I)
+Ki(θ,x)= SMatrix{NUM_HIDDENSTATES,NUM_HIDDENSTATES}( NNlib.softmax([0.0 dot(x,θ.γ12) -Inf; dot(x,θ.γ21) 0.0 dot(x,θ.γ23) ; -Inf dot(x,θ.γ32) 0.0];dims=2) ) # slightly faster, though almost double allocation
+Ki(_,::Missing) = SMatrix{NUM_HIDDENSTATES,NUM_HIDDENSTATES}(1.0I)
  
 scaledandshifted_logistic(x) = 2.0logistic(x) -1.0 # function that maps [0,∞) to [0,1)
 
@@ -54,7 +56,7 @@ function pullback(θ,x,h) # compute Ki(θ,x)*h
     a3 = dot(StatsFuns.softmax(SA[-Inf, dot(x,θ.γ32), 0.0]),h)
     SA[a1,a2,a3]
 end
-pullback(θ,x::Vector{Missing},h) = h
+pullback(_, ::Missing,h) = h
 
 """
     response(Z) 
@@ -92,8 +94,8 @@ sample_observation(Λ, u) =  SA[sample(Weights(Λ[1][u,:])), sample(Weights(Λ[2
     (thus, last element of X are not used)
 
 """
-function sample(θ, 𝒪::ObservationTrajectory)             # Generate exact track + observations
-    X = 𝒪.X
+function sample(θ, X)# 𝒪::ObservationTrajectory)             # Generate exact track + observations
+    #X = 𝒪.X
     Λ = Λi(θ)
     uprev = sample(Weights(Πroot(X[1])))                  # sample u1 (possibly depending on X[1])
     U = [uprev]
@@ -103,15 +105,14 @@ function sample(θ, 𝒪::ObservationTrajectory)             # Generate exact tr
         uprev = u
     end
     Y = [sample_observation(Λ, u) for u ∈ U]
-    (U, ObservationTrajectory(𝒪.X, Y))
+    #(U, ObservationTrajectory(𝒪.X, Y))
+    U, Y
 end
 
 
 h_from_one_observation(Λ, i::Int) = Λ[:,i]
-h_from_one_observation(Λ, i::Missing) = SA[1.0,1.0,1.0]
 
-
-function h_from_observation(θ::Tθ, y::T) where {Tθ,T} 
+function h_from_observation(θ, y) 
     Λ = Λi(θ)
     # a1 = [Λ[i][:,y[i]] for i in eachindex(y)]  # only those indices where y is not missing, for an index where it is missing we can just send [1;1;1;1], or simply define y as such in case of missingness
     # out = [prod(first.(a1))]
@@ -122,6 +123,9 @@ function h_from_observation(θ::Tθ, y::T) where {Tθ,T}
     # out
     h_from_one_observation(Λ[1],y[1]) .* h_from_one_observation(Λ[2],y[2]) .* h_from_one_observation(Λ[3],y[3]) .* h_from_one_observation(Λ[4],y[4])
 end
+
+h_from_observation(_, ::Missing) =  @SVector ones(NUM_HIDDENSTATES)
+
 
 function normalise!(x)
     s = sum(x)
@@ -136,7 +140,7 @@ function loglik_and_bif(θ, 𝒪::ObservationTrajectory)
     H = [hprev]
     loglik = zero(θ[1][1])
     for i in N:-1:2
-        h = (Ki(θ,X[i]) * hprev) .* h_from_observation(θ, Y[i-1])
+        h = pullback(θ, X[i], h) .* h_from_observation(θ, Y[i-1])
         c = normalise!(h)
         loglik += c
         pushfirst!(H, copy(ForwardDiff.value.(h)))
@@ -152,8 +156,6 @@ function loglik(θ, 𝒪::ObservationTrajectory)
     h = h_from_observation(θ, Y[N])
     loglik = zero(θ[1][1])
     for i in N:-1:2
-        # K = Ki(θ,X[i]) 
-        # h = (K * h) .* h_from_observation(θ, Y[i-1])
         h = pullback(θ, X[i], h) .* h_from_observation(θ, Y[i-1])
         c = normalise!(h)
         loglik += c
@@ -183,10 +185,10 @@ function sample_guided(θ, 𝒪, H)# Generate approximate track
     uprev = sample(Weights(Πroot(X[1]) .* H[1])) # Weighted prior distribution
     uᵒ = [uprev]
     for i=2:N
-            w = Ki(θ,X[i])[uprev,:] .* H[i]         # Weighted transition density
-            u = sample(Weights(w))
-            push!(uᵒ, u)
-            uprev = u
+        w = Ki(θ,X[i])[uprev,:] .* H[i]         # Weighted transition density
+        u = sample(Weights(w))
+        push!(uᵒ, u)
+        uprev = u
     end
     uᵒ
 end
@@ -205,36 +207,53 @@ println("true vals", "  ", γup,"  ", γdown,"  ", Z0)
 
 
 # generate covariates
-n = 40 # nr of subjects
-T = 30 # nr of times at which we observe
+n = 20 # nr of subjects
+T = 15 # nr of times at which we observe
 
 # el1 = intensity, el2 = gender
-X = [ SA[0.05*t + 0.2*randn(), 0.0] for t in 1:T]
-dimY = 4
-𝒪s = [ObservationTrajectory(X,dimY)]
-for i in 2:n
-    local X 
+
+
+
+TX = Union{Missing, SVector{DIM_COVARIATES,Float64}} # indien er missing vals zijn 
+TY = Union{Missing, SVector{DIM_RESPONSE, Int64}}
+
+# TX = SVector{2,Float64}
+# TY = SVector{DIM_RESPONSE, Int64}
+
+𝒪s = ObservationTrajectory{TX, TY}[]
+for i in 1:n
+    #local X 
+    X = TX[]   # next, we can push! elements to X
     if i ≤ 10 
-        X = [ SA[0.05*t + 0.2*randn(), 0.0] for t in 1:T]
+        for t in 1: T
+            push!(X, SA[-0.05*t + 0.2*randn(), 1.0])
+        end
     else
-        X = [ SA[-0.05*t + 0.2*randn(), 1.0] for t in 1:T]
+        for t in 1: T
+            push!(X, SA[-0.05*t + 0.2*randn(), 1.0])
+        end
+        X[3] = missing
     end
-    push!(𝒪s, ObservationTrajectory(X, dimY))
+    U, Y =  sample(θ0, X) 
+    YY = TY[]
+    push!(YY, missing) 
+    for t in  2:(T-1)
+        push!(YY, Y[t]) 
+    end    
+    
+    push!(𝒪s, ObservationTrajectory(X, YY))
 end
 
-# generate tracks for all individuals
-for i in eachindex(𝒪s)
-    U, 𝒪 =  sample(θ0, 𝒪s[i]) 
-    𝒪s[i] = 𝒪
-end 
+
+
 
 # use of Turing to sample from the posterior
 
 
 @model function logtarget(𝒪s)
-    γ12 ~ filldist(Normal(0,2),2)#MvNormal(fill(0.0, 2), 2.0 * I)
-    γ21  ~ filldist(Normal(0,2),2)  #MvNormal(fill(0.0, 2), 2.0 * I)
-    Z0 ~ filldist(Exponential(), 3) 
+    γ12 ~ filldist(Normal(0,2), DIM_COVARIATES)#MvNormal(fill(0.0, 2), 2.0 * I)
+    γ21  ~ filldist(Normal(0,2), DIM_COVARIATES)  #MvNormal(fill(0.0, 2), 2.0 * I)
+    Z0 ~ filldist(Exponential(), NUM_HIDDENSTATES) 
     Turing.@addlogprob! loglik(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ12, γ32 = γ21, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0), 𝒪s)
 end
 
