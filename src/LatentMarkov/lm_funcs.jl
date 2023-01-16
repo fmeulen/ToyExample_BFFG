@@ -1,42 +1,18 @@
-wdir = @__DIR__
-cd(wdir)
-outdir= joinpath(wdir, "out")
-
-using StatsBase, Plots, LinearAlgebra
-using Optim
-using ForwardDiff
-using Distributions
-using ComponentArrays
-using StatsFuns
-using Random
-using DynamicHMC
-using UnPack
-using PDMats
-using Turing
-using StatsPlots
-using BenchmarkTools
-using StaticArrays
-using NNlib # for softmax
-import StatsBase.sample
-
 # Y_i depends on U_i
 # U_i depends on U_{i-1}, X_i
 # u_1 depends on Πroot(X1)
 
-const NUM_HIDDENSTATES = 3
-const DIM_COVARIATES = 2
-const DIM_RESPONSE = 4
 
 struct ObservationTrajectory{S,T}
     X::Vector{S}  # vector of covariates (each element of X contains the covariates at a particular time instance)
     Y::Vector{T}  # vector of responses (each element of Y contains a K-vector of responses to the K questions)
 end
-#ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(fill(1,dimY), length(X)))  # constructor if only X is given
+#ObservationTrajectory(X,  DIM_RESPONSE) = ObservationTrajectory(X, fill(fill(1,DIM_RESPONSE), length(X)))  # constructor if only X is given
 
-ObservationTrajectory(X, dimY) = ObservationTrajectory(X, fill(SA[1,1,1,1], length(X)))  # constructor if only X is given
+ObservationTrajectory(X, _) = ObservationTrajectory(X, fill(SA[1,1,1,1], length(X)))  # constructor if only X is given
 
 # Prior on root node (x can be inital state)
-Πroot(x) = (@SVector ones(NUM_HIDDENSTATES))/3.0    
+Πroot(_) = (@SVector ones(NUM_HIDDENSTATES))/3.0    
 
 # transition kernel of the latent chain assuming 3 latent states
 #Ki(θ,x) = [StatsFuns.softmax([0.0, dot(x,θ.γ12), -Inf])' ; StatsFuns.softmax([dot(x,θ.γ21), 0.0, dot(x,θ.γ23)])' ; StatsFuns.softmax([-Inf, dot(x,θ.γ32), 0])']
@@ -188,85 +164,28 @@ function sample_guided(θ, 𝒪, H)# Generate approximate track
     uᵒ
 end
 
+function unitvec(k,K)
+    ee = zeros(K); 
+    ee[k] = 1.0
+    SVector{K}(ee)
+end
 
-########### An example, where data are generated from the model ####################
-
-# True parameter vector
-γup = 2.0; γdown = -0.5
-γ12 = γ23 = [γup, 0.0]
-γ21 = γ32 = [γdown, -0.1]
-Z0 = [0.5, 1.0, 1.5]
-θ0 = ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ23, γ32 = γ32, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0)
-
-println("true vals", "  ", γup,"  ", γdown,"  ", Z0)
-
-# generate covariates
-n = 20 # nr of subjects
-T = 15 # nr of times at which we observe
-# el1 = intensity, el2 = gender
-
-TX = Union{Missing, SVector{DIM_COVARIATES,Float64}} # indien er missing vals zijn 
-TY = Union{Missing, SVector{DIM_RESPONSE, Int64}}
-
-# TX = SVector{2,Float64}
-# TY = SVector{DIM_RESPONSE, Int64}
-
-𝒪s = ObservationTrajectory{TX, TY}[]
-for i in 1:n
-    #local X 
-    X = TX[]   # next, we can push! elements to X
-    if i ≤ 10 
-        for t in 1: T
-            push!(X, SA[-0.05*t + 0.2*randn(), 1.0])
-        end
-    else
-        for t in 1: T
-            push!(X, SA[-0.05*t + 0.2*randn(), 1.0])
-        end
-        X[3] = missing
+function viterbi(θ, 𝒪::ObservationTrajectory) 
+    @unpack X, Y = 𝒪
+    N = length(Y) 
+    h = h_from_observation(θ, Y[N])
+    mls = [argmax(h)]  # m(ost) l(ikely) s(tate)
+    h = unitvec(mls[1], NUM_HIDDENSTATES)
+    #loglik = zero(θ[1][1])
+    for i in N:-1:2
+        h = pullback(θ, X[i], h) .* h_from_observation(θ, Y[i-1])
+        #c = normalise!(h)
+        pushfirst!(mls, argmax(h))
+        h = unitvec(mls[1], NUM_HIDDENSTATES)
+     #   loglik += c
     end
-    U, Y =  sample(θ0, X) 
-    YY = TY[]
-    push!(YY, missing) 
-    for t in  2:(T-1)
-        push!(YY, Y[t]) 
-    end    
-    push!(𝒪s, ObservationTrajectory(X, YY))
+    #loglik + log(dot(h, Πroot(X[1])))
+    mls
 end
-
-############ use of Turing to sample from the posterior ################
-
-@model function logtarget(𝒪s)
-    γ12 ~ filldist(Normal(0,2), DIM_COVARIATES)#MvNormal(fill(0.0, 2), 2.0 * I)
-    γ21 ~ filldist(Normal(0,2), DIM_COVARIATES)  #MvNormal(fill(0.0, 2), 2.0 * I)
-    Z0 ~ filldist(Exponential(), NUM_HIDDENSTATES) 
-    Turing.@addlogprob! loglik(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ12, γ32 = γ21, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0), 𝒪s)
-end
-
-model = logtarget(𝒪s)
-
-# compute map and mle 
-@time map_estimate = optimize(model, MAP())
-@time mle_estimate = optimize(model, MLE())
-
-println("true vals", "  ", γ12,"  ", γ21,"  ", Z0)
-
-#sampler = DynamicNUTS() # HMC(0.05, 10);
-sampler = NUTS()
-
-@time chain = sample(model, sampler, 1000)#; progress=true);
-
-# plotting 
-histogram(chain)
-savefig("latentmarkov_histograms.png")
-plot(chain)
-savefig("latentmarkov_traceplots_histograms.png")
-
-@show chain 
-# describe(chain)[1]
-# describe(chain)[2]
-
-
-
 
 

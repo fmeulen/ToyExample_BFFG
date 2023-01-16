@@ -148,4 +148,6 @@ loglik2(𝒪) = (θ) -> loglik2(θ, 𝒪)
     #     Turing.@addlogprob! loglik(Πroot, 𝒪s)(ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ23, γ32 = γ32, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0))
     # end
 
-
+for i in 1:n
+    @show hcat(Us[i], viterbi(θ0, 𝒪s[i]))
+end
