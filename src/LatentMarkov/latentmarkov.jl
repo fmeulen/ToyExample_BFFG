@@ -27,52 +27,6 @@ const DIM_RESPONSE = 4
 include("lm_funcs.jl")
 
 
-########### An example, where data are generated from the model ####################
-
-# True parameter vector
-γup = 2.0; γdown = -0.5
-γ12 = γ23 = [γup, 0.0]
-γ21 = γ32 = [γdown, -0.1]
-Z0 = [0.5, 1.0, 1.5]
-θ0 = ComponentArray(γ12 = γ12, γ21 = γ21, γ23 = γ23, γ32 = γ32, Z1=Z0, Z2=Z0, Z3=Z0, Z4=Z0)
-
-println("true vals", "  ", γup,"  ", γdown,"  ", Z0)
-
-# generate covariates
-n = 20 # nr of subjects
-T = 15 # nr of times at which we observe
-# el1 = intensity, el2 = gender
-
-TX = Union{Missing, SVector{DIM_COVARIATES,Float64}} # indien er missing vals zijn 
-TY = Union{Missing, SVector{DIM_RESPONSE, Int64}}
-
-# TX = SVector{2,Float64}
-# TY = SVector{DIM_RESPONSE, Int64}
-
-𝒪s = ObservationTrajectory{TX, TY}[]
-Us =  Vector{Int64}[]
-for i in 1:n
-    #local X 
-    X = TX[]   # next, we can push! elements to X
-    if i ≤ 10 
-        for t in 1: T
-            push!(X, SA[-0.05*t + 0.2*randn(), 1.0])
-        end
-    else
-        for t in 1: T
-            push!(X, SA[-0.05*t + 0.2*randn(), 1.0])
-        end
-        X[3] = missing
-    end
-    U, Y =  sample(θ0, X) 
-    push!(Us, U)
-    YY = TY[]
-    push!(YY, missing) 
-    for t in  2:T
-        push!(YY, Y[t]) 
-    end    
-    push!(𝒪s, ObservationTrajectory(X, YY))
-end
 
 ############ use of Turing to sample from the posterior ################
 
@@ -102,12 +56,20 @@ model = logtarget_large(𝒪s);
 @time map_estimate = optimize(model, MAP())
 @time mle_estimate = optimize(model, MLE())
 
+θmap =  map_estimate.values
+
+mapallZtoλ(θ) = hcat(mapZtoλ(θ[5:7]), mapZtoλ(θ[8:10]), mapZtoλ(θ[11:13]), mapZtoλ(θ[14:16]))
+
+
 println("true vals", "  ", γ12,"  ", γ21,"  ", Z0)
 
 #sampler = DynamicNUTS() # HMC(0.05, 10);
 sampler = NUTS()
 
 @time chain = sample(model, sampler, 1000)#; progress=true);
+
+sampler =  NUTS(1000, 0.65) 
+@time chain = sample(model, sampler, MCMCDistributed(), 1000, 4)#; progress=true);
 
 # plotting 
 histogram(chain)
@@ -116,10 +78,17 @@ plot(chain)
 savefig("figs/latentmarkov_traceplots_histograms.png")
 
 @show chain 
+
 # describe(chain)[1]
 # describe(chain)[2]
 
+# vector with posterior means
+θpostmean = describe(chain)[1].nt.mean
+mapallZtoλ(θpostmean)
 
 
+chain[:,Symbol("γ12[2]"),1]
+chain.value[:,1:7,1]  # first 7 pars, posterior samples
 
-
+Zs = chain.value[:,5:7,1]
+[mapZtoλ(z) for z ∈ eachrow(Zs)]

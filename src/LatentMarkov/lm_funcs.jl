@@ -23,6 +23,7 @@ Ki(θ,x)= SMatrix{NUM_HIDDENSTATES,NUM_HIDDENSTATES}( NNlib.softmax([0.0 dot(x,�
 Ki(_,::Missing) = SMatrix{NUM_HIDDENSTATES,NUM_HIDDENSTATES}(1.0I)
  
 scaledandshifted_logistic(x) = 2.0logistic(x) -1.0 # function that maps [0,∞) to [0,1)
+mapZtoλ(x) = scaledandshifted_logistic.(cumsum(x))
 
 function pullback(θ,x,h) # compute Ki(θ,x)*h
     a1 = dot(StatsFuns.softmax(SA[0.0, dot(x,θ.γ12), -Inf]),h)
@@ -41,14 +42,17 @@ pullback(_, ::Missing,h) = h
     # λ1, λ2, λ3 is formed by setting λi = logistic(cumsum(Z)[i])
 """
 function response(Z) 
-        λ = scaledandshifted_logistic.(cumsum(Z))
-        # Λ = Matrix{eltype(λ)}(undef , length(λ), 2)  # 2 comes from assuming binary answers to questions
-        # for k in eachindex(λ)
-        #     Λ[k,:] =[  one(λ[k])-λ[k] λ[k] ]
-        # end
-        # Λ            
+        λ = mapZtoλ(Z)
         SA[ one(λ[1])-λ[1] λ[1];  one(λ[2])-λ[2] λ[2];  one(λ[3])-λ[3] λ[3]]
 end
+
+# function response(Z::Vector{T}) where T  # slightly slower, but generic
+#     λ = mapZtoλ(Z)
+#     v1 = SVector{NUM_HIDDENSTATES,T}(λ)
+#     v2 = SVector{NUM_HIDDENSTATES,T}(one(T) .- λ)
+#     hcat(v2, v1)
+# end
+
 
 Λi(θ) = SA[ response(θ.Z1), response(θ.Z2), response(θ.Z3), response(θ.Z4)    ]    # assume 4 questions
 
