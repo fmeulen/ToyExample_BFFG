@@ -19,11 +19,15 @@ Ki(θ,x)= NNlib.softmax([0.0 dot(x,θ.γ12) -Inf; dot(x,θ.γ21) 0.0 dot(x,θ.γ
 U, 𝒪 =  sample(θ0, 𝒪s[1]) 
 
 # backward filter
+𝒪 = 𝒪s[1]
 ll, H = loglik_and_bif(θ0, 𝒪)
 # sample from conditioned process
 Uᵒ = sample_guided(θ0, 𝒪, H)
 # compute loglikelihood
 loglik(𝒪s)(θ0)
+
+ForwardDiff.gradient(loglik(𝒪), θ0)
+ReverseDiff.gradient(loglik(𝒪), θ0)
 
 # plotting 
 N = length(Uᵒ) 
